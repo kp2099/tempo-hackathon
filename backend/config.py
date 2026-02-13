@@ -8,15 +8,14 @@ load_dotenv()
 
 
 class Settings(BaseSettings):
-    # Stellar / Tempo Network
-    stellar_network: str = "testnet"
-    stellar_horizon_url: str = "https://horizon-testnet.stellar.org"
-    stellar_secret_key: str = ""
-    stellar_public_key: str = ""
+    # Tempo Blockchain (EVM Layer 1 — Moderato Testnet)
+    tempo_rpc_url: str = "https://rpc.moderato.tempo.xyz"
+    tempo_chain_id: int = 42431
+    tempo_private_key: str = ""  # Master agent wallet private key
+    tempo_explorer_url: str = "https://explore.tempo.xyz"
 
-    # Stablecoin Asset
-    stablecoin_code: str = "USDC"
-    stablecoin_issuer: str = ""
+    # TIP-20 Stablecoin (AlphaUSD on testnet)
+    alpha_usd_address: str = "0x20c0000000000000000000000000000000000001"
 
     # AI Agent Thresholds
     risk_threshold_auto_approve: float = 0.3
@@ -35,4 +34,3 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-

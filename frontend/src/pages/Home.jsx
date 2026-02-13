@@ -75,7 +75,7 @@ export default function Home() {
               </div>
               <div>
                 <p className="text-slate-400">Payment Rail</p>
-                <p className="text-white font-medium">Tempo / Stellar</p>
+                <p className="text-white font-medium">Tempo L1 Blockchain</p>
               </div>
             </div>
           </div>

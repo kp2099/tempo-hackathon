@@ -6,8 +6,8 @@ from datetime import datetime
 
 
 class ExpenseCreate(BaseModel):
-    """Schema for creating a new expense."""
-    employee_id: str = Field(..., description="Employee ID submitting the expense")
+    """Schema for submitting a new expense."""
+    employee_id: str = Field(..., description="Employee who incurred the expense")
     amount: float = Field(..., gt=0, description="Expense amount in USD")
     category: str = Field(..., description="Expense category")
     merchant: Optional[str] = Field(None, description="Merchant/vendor name")
@@ -15,18 +15,8 @@ class ExpenseCreate(BaseModel):
     receipt_attached: bool = Field(False, description="Whether a receipt is attached")
 
 
-class RiskAssessment(BaseModel):
-    """AI risk assessment result."""
-    risk_score: float = Field(..., ge=0, le=1, description="Risk score 0-1")
-    anomaly_score: float = Field(..., ge=0, le=1, description="Anomaly score 0-1")
-    predicted_category: str = Field(..., description="ML-predicted category")
-    risk_factors: List[str] = Field(default_factory=list, description="List of risk factors")
-    decision: str = Field(..., description="auto_approved, manager_review, or rejected")
-    decision_reason: str = Field(..., description="Human-readable decision reason")
-
-
 class ExpenseResponse(BaseModel):
-    """Full expense response with AI scoring."""
+    """Full expense response with AI scoring and blockchain data."""
     id: int
     expense_id: str
     employee_id: str
@@ -48,13 +38,13 @@ class ExpenseResponse(BaseModel):
     approved_by: Optional[str] = None
     approval_reason: Optional[str] = None
 
-    # Blockchain
+    # Tempo Blockchain
     tx_hash: Optional[str] = None
     memo: Optional[str] = None
-    stellar_tx_url: Optional[str] = None
+    tempo_tx_url: Optional[str] = None
 
     # Timestamps
-    submitted_at: datetime
+    submitted_at: Optional[datetime] = None
     processed_at: Optional[datetime] = None
     paid_at: Optional[datetime] = None
 
@@ -63,7 +53,7 @@ class ExpenseResponse(BaseModel):
 
 
 class ExpenseListResponse(BaseModel):
-    """Paginated list of expenses."""
+    """Paginated expense list."""
     total: int
     expenses: List[ExpenseResponse]
 
@@ -78,5 +68,4 @@ class ExpenseStats(BaseModel):
     flagged: int
     paid: int
     avg_risk_score: float
-    total_saved_time_hours: float  # estimated time saved
-
+    total_saved_time_hours: float

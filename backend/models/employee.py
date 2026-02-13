@@ -12,7 +12,7 @@ class EmployeeCreate(BaseModel):
     email: str = Field(..., description="Email address")
     department: str = Field(..., description="Department name")
     role: str = Field("employee", description="Role: employee, manager, finance")
-    stellar_wallet: Optional[str] = Field(None, description="Stellar wallet public key")
+    tempo_wallet: Optional[str] = Field(None, description="Tempo wallet address (0x...)")
     monthly_limit: float = Field(5000.0, description="Monthly spending limit in USD")
 
 
@@ -24,7 +24,7 @@ class EmployeeResponse(BaseModel):
     email: str
     department: str
     role: str
-    stellar_wallet: Optional[str] = None
+    tempo_wallet: Optional[str] = None
     monthly_limit: float
     created_at: datetime
 
@@ -43,4 +43,3 @@ class EmployeeSpendingSummary(BaseModel):
     avg_risk_score: float
     flagged_count: int
     monthly_remaining: float
-

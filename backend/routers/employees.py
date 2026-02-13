@@ -14,16 +14,12 @@ router = APIRouter()
 
 @router.post("/", response_model=EmployeeResponse)
 async def create_employee(employee: EmployeeCreate, db: Session = Depends(get_db)):
-    """Create a new employee with Stellar wallet provisioning."""
+    """Create a new employee with a Tempo wallet address."""
     existing = db.query(EmployeeDB).filter(
         EmployeeDB.employee_id == employee.employee_id
     ).first()
     if existing:
         raise HTTPException(status_code=400, detail="Employee ID already exists")
-
-    # Provision Stellar wallet
-    tempo_client = get_tempo_client()
-    wallet = tempo_client.provision_wallet(employee.employee_id)
 
     db_employee = EmployeeDB(
         employee_id=employee.employee_id,
@@ -31,7 +27,7 @@ async def create_employee(employee: EmployeeCreate, db: Session = Depends(get_db
         email=employee.email,
         department=employee.department,
         role=employee.role,
-        stellar_wallet=wallet["public_key"],
+        tempo_wallet=employee.tempo_wallet,
         monthly_limit=employee.monthly_limit,
     )
 
@@ -100,13 +96,13 @@ async def get_spending_summary(employee_id: str, db: Session = Depends(get_db)):
         "monthly_limit": employee.monthly_limit,
         "monthly_spent": round(monthly_spent, 2),
         "monthly_remaining": round(employee.monthly_limit - monthly_spent, 2),
-        "wallet": employee.stellar_wallet,
+        "wallet": employee.tempo_wallet,
     }
 
 
 @router.get("/{employee_id}/wallet")
 async def get_wallet_info(employee_id: str, db: Session = Depends(get_db)):
-    """Get employee's Stellar wallet info and balance."""
+    """Get employee's Tempo wallet info and AlphaUSD balance."""
     employee = db.query(EmployeeDB).filter(
         EmployeeDB.employee_id == employee_id
     ).first()
@@ -114,12 +110,13 @@ async def get_wallet_info(employee_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Employee not found")
 
     tempo_client = get_tempo_client()
-    balance = tempo_client.get_account_balance(employee.stellar_wallet or "")
+    balance = tempo_client.get_balance(employee.tempo_wallet or "")
 
     return {
         "employee_id": employee.employee_id,
         "name": employee.name,
-        "wallet_address": employee.stellar_wallet,
+        "wallet_address": employee.tempo_wallet,
         "balance": balance,
+        "network": "Tempo Testnet (Moderato)",
+        "explorer": f"{tempo_client.w3 and 'https://explore.tempo.xyz/address/' + (employee.tempo_wallet or '')}",
     }
-

@@ -2,6 +2,8 @@
 Approval Engine - The AI Agent's decision-making core.
 Combines ML risk scoring, anomaly detection, and policy checks
 to make autonomous approval decisions.
+
+Memos are encoded as bytes32 for Tempo's TIP-20 transferWithMemo().
 """
 
 import logging
@@ -39,7 +41,7 @@ class ApprovalDecision:
         self.risk_factors = risk_factors
         self.policy_result = policy_result
         self.reason = reason
-        self.memo = memo  # For Tempo blockchain memo
+        self.memo = memo  # For Tempo blockchain memo (bytes32)
         self.timestamp = datetime.utcnow()
 
     def to_dict(self) -> dict:
@@ -61,7 +63,7 @@ class ApprovalEngine:
     AgentFin's autonomous decision engine.
 
     Three-tier decision system:
-    🟢 Low Risk (< 0.3)  → AUTO-APPROVE + instant payment
+    🟢 Low Risk (< 0.3)  → AUTO-APPROVE + instant payment on Tempo
     🟡 Medium Risk (0.3-0.7) → MANAGER REVIEW with AI recommendation
     🔴 High Risk (> 0.7) → AUTO-REJECT + flag for investigation
     """
@@ -113,7 +115,7 @@ class ApprovalEngine:
             risk_factors=risk_factors,
         )
 
-        # Step 6: Build Tempo memo
+        # Step 6: Build Tempo on-chain memo (bytes32)
         memo = self._build_memo(
             risk_score=risk_score,
             category=expense_data.get("category", predicted_category),
@@ -210,26 +212,29 @@ class ApprovalEngine:
         amount: float,
     ) -> str:
         """
-        Build a programmable memo for the Tempo/Stellar transaction.
-        Max 28 bytes for Stellar memo_text, so we keep it concise.
-        We use memo_hash for longer data.
+        Build a programmable memo for the Tempo TIP-20 transferWithMemo().
+
+        Tempo uses bytes32 memos (32 bytes). We pack the key AI decision
+        data into a compact format that fits on-chain:
+          R=0.10|C=meal|D=appr|$45
+
+        The full human-readable memo is stored in our database for the UI.
         """
-        # Short memo for on-chain (fits Stellar memo_text limit)
-        short_memo = (
+        # Compact on-chain memo (≤32 bytes for Tempo bytes32)
+        compact = (
             f"R={risk_score:.2f}|"
             f"C={category[:4]}|"
             f"D={decision[:4]}|"
-            f"A={amount:.0f}"
+            f"${amount:.0f}"
         )
 
-        # Full memo (stored off-chain / in memo_hash)
+        # Full memo stored in DB and displayed in UI
         full_memo = (
             f"Risk={risk_score:.2f} | "
             f"Category={category} | "
             f"Decision={decision} | "
             f"Amount=${amount:.2f} | "
-            f"ApprovedBy={self.AGENT_NAME}"
+            f"Agent={self.AGENT_NAME}"
         )
 
         return full_memo
-

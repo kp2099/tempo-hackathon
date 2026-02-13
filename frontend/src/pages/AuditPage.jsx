@@ -10,7 +10,7 @@ export default function AuditPage() {
           On-Chain Audit Trail
         </h1>
         <p className="text-slate-400 mt-1">
-          Tamper-proof record of every AI decision and payment — every entry is verifiable on Stellar
+          Tamper-proof record of every AI decision and payment — every entry is verifiable on Tempo blockchain
         </p>
       </div>
 
@@ -21,9 +21,9 @@ export default function AuditPage() {
           <p className="font-medium mb-1">Why On-Chain Audit?</p>
           <p className="text-green-300/70">
             Every expense decision by AgentFin is recorded with a programmable memo containing the
-            risk score, category, and decision reason. These are immutably stored on the Stellar
-            blockchain, providing a tamper-proof audit trail that regulators and auditors can
-            independently verify — without needing access to our internal systems.
+            risk score, category, and decision reason. These are immutably stored on the Tempo L1
+            blockchain via TIP-20 transferWithMemo(), providing a tamper-proof audit trail that
+            regulators and auditors can independently verify on explore.tempo.xyz.
           </p>
         </div>
       </div>

@@ -98,7 +98,7 @@ export default function AuditTrail() {
                   )}
                   {log.tx_hash && (
                     <a
-                      href={log.stellar_url || '#'}
+                      href={log.tempo_tx_url || `https://explore.tempo.xyz/tx/${log.tx_hash}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300"

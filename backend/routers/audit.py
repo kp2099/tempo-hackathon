@@ -1,10 +1,11 @@
-"""Audit trail API endpoints - On-chain transparency."""
+"""Audit trail API endpoints - On-chain transparency via Tempo blockchain."""
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
 from database import get_db, AuditLogDB
+from config import settings
 
 router = APIRouter()
 
@@ -20,6 +21,7 @@ async def get_audit_trail(
     """
     Get the full audit trail.
     Every AI decision and payment is logged here for transparency.
+    Transactions are verifiable on explore.tempo.xyz.
     """
     query = db.query(AuditLogDB)
 
@@ -44,8 +46,8 @@ async def get_audit_trail(
                 "tx_hash": log.tx_hash,
                 "memo": log.memo,
                 "timestamp": log.timestamp.isoformat() if log.timestamp else None,
-                "stellar_url": (
-                    f"https://stellar.expert/explorer/testnet/tx/{log.tx_hash}"
+                "tempo_tx_url": (
+                    f"{settings.tempo_explorer_url}/tx/{log.tx_hash}"
                     if log.tx_hash else None
                 ),
             }
@@ -69,4 +71,3 @@ async def get_audit_stats(db: Session = Depends(get_db)):
         "on_chain_records": on_chain,
         "transparency_rate": round(on_chain / max(total, 1) * 100, 1),
     }
-

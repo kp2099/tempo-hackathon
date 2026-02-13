@@ -1,6 +1,6 @@
 """
 Expense API endpoints.
-Handles submission, AI processing, approval, and payment execution.
+Handles submission, AI processing, approval, and payment execution on Tempo.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -128,11 +128,11 @@ async def submit_expense(expense: ExpenseCreate, db: Session = Depends(get_db)):
         processed_at=datetime.utcnow(),
     )
 
-    # If auto-approved, execute instant payment via Tempo
-    if decision.decision == "auto_approved" and employee.stellar_wallet:
+    # If auto-approved, execute instant payment via Tempo blockchain
+    if decision.decision == "auto_approved" and employee.tempo_wallet:
         tempo_client = get_tempo_client()
         payment = tempo_client.send_payment(
-            destination=employee.stellar_wallet,
+            destination=employee.tempo_wallet,
             amount=expense.amount,
             memo=decision.memo,
             expense_id=expense_id,
@@ -140,7 +140,7 @@ async def submit_expense(expense: ExpenseCreate, db: Session = Depends(get_db)):
 
         if payment["success"]:
             db_expense.tx_hash = payment["tx_hash"]
-            db_expense.stellar_tx_url = payment["stellar_tx_url"]
+            db_expense.tempo_tx_url = payment["tempo_tx_url"]
             db_expense.paid_at = datetime.utcnow()
             db_expense.status = "paid"
 
@@ -236,7 +236,7 @@ async def get_expense(expense_id: str, db: Session = Depends(get_db)):
 
 @router.post("/{expense_id}/approve")
 async def manually_approve(expense_id: str, db: Session = Depends(get_db)):
-    """Manually approve an expense (manager action)."""
+    """Manually approve an expense (manager action) and pay via Tempo."""
     expense = db.query(ExpenseDB).filter(ExpenseDB.expense_id == expense_id).first()
     if not expense:
         raise HTTPException(status_code=404, detail="Expense not found")
@@ -253,11 +253,11 @@ async def manually_approve(expense_id: str, db: Session = Depends(get_db)):
     expense.approved_by = "Manager"
     expense.processed_at = datetime.utcnow()
 
-    # Execute payment
-    if employee and employee.stellar_wallet:
+    # Execute payment on Tempo
+    if employee and employee.tempo_wallet:
         tempo_client = get_tempo_client()
         payment = tempo_client.send_payment(
-            destination=employee.stellar_wallet,
+            destination=employee.tempo_wallet,
             amount=expense.amount,
             memo=expense.memo or f"Approved by manager | Expense {expense_id}",
             expense_id=expense_id,
@@ -265,7 +265,7 @@ async def manually_approve(expense_id: str, db: Session = Depends(get_db)):
 
         if payment["success"]:
             expense.tx_hash = payment["tx_hash"]
-            expense.stellar_tx_url = payment["stellar_tx_url"]
+            expense.tempo_tx_url = payment["tempo_tx_url"]
             expense.paid_at = datetime.utcnow()
             expense.status = "paid"
 
@@ -305,4 +305,3 @@ async def manually_reject(expense_id: str, db: Session = Depends(get_db)):
     db.commit()
 
     return {"message": f"Expense {expense_id} rejected", "status": "rejected"}
-

@@ -139,7 +139,7 @@ export default function ExpenseList({ filterStatus, showActions }) {
                 {/* TX link */}
                 {expense.tx_hash && (
                   <a
-                    href={expense.stellar_tx_url || '#'}
+                    href={expense.tempo_tx_url || `https://explore.tempo.xyz/tx/${expense.tx_hash}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-blue-400 hover:text-blue-300"

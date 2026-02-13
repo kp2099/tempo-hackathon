@@ -249,12 +249,12 @@ export default function ExpenseForm() {
                 </div>
               )}
 
-              {/* Transaction hash */}
+              {/* Transaction hash — Tempo blockchain */}
               {result.tx_hash && (
                 <div className="mt-3 bg-slate-900/50 rounded-lg p-3">
-                  <p className="text-xs text-slate-400 mb-1">⛓️ Stellar Transaction</p>
+                  <p className="text-xs text-slate-400 mb-1">⛓️ Tempo Transaction</p>
                   <a
-                    href={result.stellar_tx_url || '#'}
+                    href={result.tempo_tx_url || `https://explore.tempo.xyz/tx/${result.tx_hash}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-xs text-blue-400 hover:text-blue-300 font-mono break-all underline"

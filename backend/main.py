@@ -1,6 +1,9 @@
 """
 TempoExpenseAI - Autonomous AI-Powered Expense Approval Agent
 Main FastAPI application entry point.
+
+Uses Tempo blockchain (L1, Chain ID 42431) for instant stablecoin payments
+with programmable memos for on-chain audit trails.
 """
 
 from fastapi import FastAPI
@@ -27,7 +30,7 @@ async def lifespan(app: FastAPI):
     create_tables()
     logger.info("✅ Database tables created")
 
-    # Seed demo data
+    # Seed demo data (employees with real Tempo testnet wallets)
     seed_demo_data()
     logger.info("✅ Demo data seeded")
 
@@ -36,6 +39,8 @@ async def lifespan(app: FastAPI):
     logger.info("✅ ML models loaded")
 
     logger.info("🤖 AgentFin is online and ready for autonomous expense processing!")
+    logger.info(f"⛓️  Tempo RPC: {settings.tempo_rpc_url}")
+    logger.info(f"🔍 Explorer: {settings.tempo_explorer_url}")
     yield
     logger.info("👋 TempoExpenseAI shutting down...")
 
@@ -45,7 +50,7 @@ app = FastAPI(
     description=(
         "Autonomous AI-powered expense approval agent that detects fraud, "
         "routes approvals, and instantly pays employees using Tempo's "
-        "programmable stablecoin infrastructure."
+        "programmable stablecoin infrastructure on the Tempo L1 blockchain."
     ),
     version="1.0.0",
     lifespan=lifespan,
@@ -72,24 +77,25 @@ async def root():
         "name": "TempoExpenseAI",
         "agent": "AgentFin",
         "status": "online",
+        "blockchain": "Tempo L1 (Moderato Testnet)",
+        "chain_id": settings.tempo_chain_id,
         "description": (
             "Autonomous AI expense approval agent with "
             "Tempo stablecoin payments"
         ),
         "features": [
-            "XGBoost anomaly detection",
-            "Behavioral risk scoring",
+            "XGBoost risk scoring + Isolation Forest anomaly detection",
             "Three-tier approval (auto-approve / review / reject)",
-            "Instant Stellar/Tempo stablecoin payments",
-            "Programmable memos with AI reasoning",
-            "On-chain tamper-proof audit trail",
+            "Instant TIP-20 stablecoin payments on Tempo blockchain",
+            "Programmable memos with AI reasoning (on-chain audit trail)",
+            "Verifiable transactions on explore.tempo.xyz",
         ],
     }
 
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "agent": "AgentFin"}
+    return {"status": "healthy", "agent": "AgentFin", "chain": "tempo_moderato"}
 
 
 if __name__ == "__main__":
@@ -100,4 +106,3 @@ if __name__ == "__main__":
         port=settings.api_port,
         reload=settings.debug,
     )
-

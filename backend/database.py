@@ -13,7 +13,7 @@ from config import settings
 engine = create_engine(
     settings.database_url,
     connect_args={"check_same_thread": False} if "sqlite" in settings.database_url else {},
-    echo=settings.debug,
+    echo=False,
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -56,7 +56,7 @@ class EmployeeDB(Base):
     email = Column(String(100), nullable=False)
     department = Column(String(50), nullable=False)
     role = Column(String(50), default="employee")
-    stellar_wallet = Column(String(56), nullable=True)  # Stellar public key
+    tempo_wallet = Column(String(42), nullable=True)  # Tempo EVM address (0x...)
     monthly_limit = Column(Float, default=5000.0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -85,10 +85,10 @@ class ExpenseDB(Base):
     approved_by = Column(String(50), nullable=True)  # "AgentFin" or manager name
     approval_reason = Column(Text, nullable=True)
 
-    # Blockchain
-    tx_hash = Column(String(100), nullable=True)
-    memo = Column(Text, nullable=True)
-    stellar_tx_url = Column(String(200), nullable=True)
+    # Tempo Blockchain
+    tx_hash = Column(String(100), nullable=True)  # Tempo transaction hash (0x...)
+    memo = Column(Text, nullable=True)  # On-chain memo content
+    tempo_tx_url = Column(String(200), nullable=True)  # explore.tempo.xyz link
 
     # Timestamps
     submitted_at = Column(DateTime, default=datetime.utcnow)
@@ -136,4 +136,3 @@ def get_db():
         yield db
     finally:
         db.close()
-

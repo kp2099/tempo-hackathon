@@ -1,13 +1,19 @@
 """
 Seed demo data for the application.
-Creates sample employees and policies for demonstration.
+Creates sample employees with REAL Tempo testnet wallets and policies for demonstration.
 """
 
 import logging
 from database import SessionLocal, EmployeeDB, PolicyDB
-from services.tempo_client import get_tempo_client
 
 logger = logging.getLogger("TempoExpenseAI.SeedData")
+
+# -----------------------------------------------------------------------
+# Real Tempo Testnet Wallets
+# Each wallet has 1,000,000 AlphaUSD, BetaUSD, ThetaUSD, and PathUSD.
+# Wallet 1 is reserved as the AGENT MASTER WALLET (sends payments).
+# Wallets 2-5 are assigned to employees (receive payments).
+# -----------------------------------------------------------------------
 
 DEMO_EMPLOYEES = [
     {
@@ -17,6 +23,8 @@ DEMO_EMPLOYEES = [
         "department": "sales",
         "role": "employee",
         "monthly_limit": 5000.0,
+        # Wallet 2 — real funded Tempo testnet wallet
+        "tempo_wallet": "0xAcF8dBD0352a9D47135DA146EA5DbEfAD58340C4",
     },
     {
         "employee_id": "EMP0002",
@@ -25,6 +33,8 @@ DEMO_EMPLOYEES = [
         "department": "engineering",
         "role": "employee",
         "monthly_limit": 3000.0,
+        # Wallet 3 — real funded Tempo testnet wallet
+        "tempo_wallet": "0x41A75fc9817AF9F2DB0c0e58C71Bc826339b3Acb",
     },
     {
         "employee_id": "EMP0003",
@@ -33,6 +43,8 @@ DEMO_EMPLOYEES = [
         "department": "marketing",
         "role": "employee",
         "monthly_limit": 4000.0,
+        # Wallet 4 — real funded Tempo testnet wallet
+        "tempo_wallet": "0x88FB1167B01EcE2CAEe65c4E193Ba942D6F73d70",
     },
     {
         "employee_id": "EMP0004",
@@ -41,6 +53,8 @@ DEMO_EMPLOYEES = [
         "department": "engineering",
         "role": "manager",
         "monthly_limit": 8000.0,
+        # Wallet 5 — real funded Tempo testnet wallet
+        "tempo_wallet": "0xe945797ebC84F1953Ff8131bC29277e567b881D4",
     },
     {
         "employee_id": "EMP0005",
@@ -49,6 +63,8 @@ DEMO_EMPLOYEES = [
         "department": "finance",
         "role": "finance",
         "monthly_limit": 10000.0,
+        # Uses a derived address (not one of the 5 test wallets)
+        "tempo_wallet": "0x031891A61200FedDd622EbACC10734BC90093B2A",
     },
 ]
 
@@ -97,7 +113,7 @@ DEMO_POLICIES = [
 
 
 def seed_demo_data():
-    """Seed the database with demo employees and policies."""
+    """Seed the database with demo employees (real Tempo wallets) and policies."""
     db = SessionLocal()
     try:
         # Check if already seeded
@@ -106,24 +122,22 @@ def seed_demo_data():
             logger.info(f"ℹ️ Database already has {existing} employees, skipping seed")
             return
 
-        tempo_client = get_tempo_client()
-
-        # Seed employees
+        # Seed employees with real Tempo testnet wallets
         for emp_data in DEMO_EMPLOYEES:
-            # Provision wallet
-            wallet = tempo_client.provision_wallet(emp_data["employee_id"])
-
             employee = EmployeeDB(
                 employee_id=emp_data["employee_id"],
                 name=emp_data["name"],
                 email=emp_data["email"],
                 department=emp_data["department"],
                 role=emp_data["role"],
-                stellar_wallet=wallet["public_key"],
+                tempo_wallet=emp_data["tempo_wallet"],
                 monthly_limit=emp_data["monthly_limit"],
             )
             db.add(employee)
-            logger.info(f"   👤 Created employee: {emp_data['name']} ({emp_data['employee_id']})")
+            logger.info(
+                f"   👤 {emp_data['name']} ({emp_data['employee_id']}) "
+                f"→ {emp_data['tempo_wallet'][:10]}..."
+            )
 
         # Seed policies
         for pol_data in DEMO_POLICIES:
@@ -137,14 +151,16 @@ def seed_demo_data():
                 active=True,
             )
             db.add(policy)
-            logger.info(f"   📋 Created policy: {pol_data['name']}")
+            logger.info(f"   📋 Policy: {pol_data['name']}")
 
         db.commit()
-        logger.info(f"✅ Seeded {len(DEMO_EMPLOYEES)} employees and {len(DEMO_POLICIES)} policies")
+        logger.info(
+            f"✅ Seeded {len(DEMO_EMPLOYEES)} employees (real Tempo wallets) "
+            f"and {len(DEMO_POLICIES)} policies"
+        )
 
     except Exception as e:
         db.rollback()
         logger.error(f"❌ Seed data failed: {e}")
     finally:
         db.close()
-

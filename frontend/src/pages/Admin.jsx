@@ -84,7 +84,7 @@ export default function Admin() {
                   <div className="flex items-center gap-2 bg-slate-700 px-3 py-1.5 rounded-lg">
                     <Wallet className="w-4 h-4 text-blue-400" />
                     <span className="text-xs font-mono text-slate-300">
-                      {selectedEmployee.stellar_wallet?.substring(0, 12)}...
+                      {selectedEmployee.tempo_wallet?.substring(0, 10)}...
                     </span>
                   </div>
                 </div>
