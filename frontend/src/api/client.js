@@ -14,6 +14,8 @@ export const getExpenseStats = () => api.get('/expenses/stats');
 export const getExpense = (id) => api.get(`/expenses/${id}`);
 export const approveExpense = (id) => api.post(`/expenses/${id}/approve`);
 export const rejectExpense = (id) => api.post(`/expenses/${id}/reject`);
+export const parseExpenseText = (text) => api.post('/expenses/parse', { text });
+export const batchApprove = () => api.post('/expenses/batch-approve');
 
 // ---- Employees ----
 export const getEmployees = () => api.get('/employees/');
@@ -25,4 +27,3 @@ export const getAuditTrail = (params) => api.get('/audit/', { params });
 export const getAuditStats = () => api.get('/audit/stats');
 
 export default api;
-

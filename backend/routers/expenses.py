@@ -4,9 +4,11 @@ Handles submission, AI processing, approval, and payment execution on Tempo.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc
 from datetime import datetime
+from typing import Optional
 import uuid
 import json
 import logging
@@ -15,10 +17,17 @@ from database import get_db, ExpenseDB, AuditLogDB, EmployeeDB
 from models.expense import ExpenseCreate, ExpenseResponse, ExpenseListResponse, ExpenseStats
 from services.approval_engine import ApprovalEngine
 from services.tempo_client import get_tempo_client
+from services.nl_parser import parse_natural_language
+from services.risk_explainer import explain_risk
 
 logger = logging.getLogger("TempoExpenseAI.ExpensesRouter")
 
 router = APIRouter()
+
+
+class NLParseRequest(BaseModel):
+    """Request body for natural language parsing."""
+    text: str
 
 
 def _build_expense_features(expense: ExpenseCreate, db: Session) -> dict:
@@ -74,7 +83,7 @@ def _build_expense_features(expense: ExpenseCreate, db: Session) -> dict:
     }
 
 
-@router.post("/submit", response_model=ExpenseResponse)
+@router.post("/submit")
 async def submit_expense(expense: ExpenseCreate, db: Session = Depends(get_db)):
     """
     Submit a new expense for AI-powered autonomous processing.
@@ -105,6 +114,16 @@ async def submit_expense(expense: ExpenseCreate, db: Session = Depends(get_db)):
 
     # 🤖 AgentFin evaluates the expense
     decision = approval_engine.evaluate(features, expense.employee_id)
+
+    # Generate plain English risk explanation
+    risk_explanation = explain_risk(
+        expense_data=features,
+        risk_score=decision.risk_score,
+        anomaly_score=decision.anomaly_score,
+        risk_factors=decision.risk_factors,
+        decision=decision.decision,
+        policy_result=decision.policy_result,
+    )
 
     # Create expense record
     db_expense = ExpenseDB(
@@ -172,7 +191,14 @@ async def submit_expense(expense: ExpenseCreate, db: Session = Depends(get_db)):
         f"{db_expense.status} (Risk: {decision.risk_score:.3f})"
     )
 
-    return db_expense
+    # Build enriched response with risk explanation and fee info
+    response_data = ExpenseResponse.model_validate(db_expense)
+    result = response_data.model_dump()
+    result["risk_explanation"] = risk_explanation
+    result["fee_sponsored"] = db_expense.tx_hash is not None
+    result["fee_sponsor_label"] = "AgentFin Agent Wallet" if db_expense.tx_hash else None
+
+    return result
 
 
 @router.get("/", response_model=ExpenseListResponse)
@@ -305,3 +331,129 @@ async def manually_reject(expense_id: str, db: Session = Depends(get_db)):
     db.commit()
 
     return {"message": f"Expense {expense_id} rejected", "status": "rejected"}
+
+
+# ─── Natural Language Parsing ─────────────────────────────────────
+
+@router.post("/parse")
+async def parse_expense_text(request: NLParseRequest):
+    """
+    Parse a natural language expense description into structured fields.
+
+    Example: "Spent $120 at Marriott for the Chicago conference"
+    → { amount: 120, merchant: "Marriott", category: "accommodation", ... }
+    """
+    result = parse_natural_language(request.text)
+    return result
+
+
+# ─── Batch Approve (Parallel Tempo Payments) ──────────────────────
+
+@router.post("/batch-approve")
+async def batch_approve_pending(db: Session = Depends(get_db)):
+    """
+    Approve and pay ALL pending manager_review expenses in parallel.
+
+    Uses Tempo's 2D nonce system for concurrent transaction submission.
+    This demonstrates high-throughput payment processing capability.
+    """
+    # Get all pending expenses
+    pending = db.query(ExpenseDB).filter(
+        ExpenseDB.status == "manager_review"
+    ).all()
+
+    if not pending:
+        return {
+            "message": "No expenses pending review",
+            "approved": 0,
+            "total_amount": 0,
+        }
+
+    # Build payment list
+    payments = []
+    expense_map = {}
+
+    for expense in pending:
+        employee = db.query(EmployeeDB).filter(
+            EmployeeDB.employee_id == expense.employee_id
+        ).first()
+
+        if employee and employee.tempo_wallet:
+            payment = {
+                "destination": employee.tempo_wallet,
+                "amount": expense.amount,
+                "memo": expense.memo or f"Batch approved | {expense.expense_id}",
+                "expense_id": expense.expense_id,
+            }
+            payments.append(payment)
+            expense_map[expense.expense_id] = expense
+
+    if not payments:
+        return {
+            "message": "No expenses with valid wallets",
+            "approved": 0,
+            "total_amount": 0,
+        }
+
+    # Execute batch payment on Tempo
+    tempo_client = get_tempo_client()
+    batch_result = tempo_client.send_batch_payments(payments)
+
+    # Update database records
+    approved_count = 0
+    for result in batch_result.get("results", []):
+        eid = result.get("expense_id")
+        if eid and eid in expense_map and result.get("success"):
+            expense = expense_map[eid]
+            expense.status = "paid"
+            expense.approved_by = "Manager (Batch)"
+            expense.tx_hash = result.get("tx_hash")
+            expense.tempo_tx_url = result.get("tempo_tx_url")
+            expense.paid_at = datetime.utcnow()
+            expense.processed_at = datetime.utcnow()
+
+            # Audit log
+            audit = AuditLogDB(
+                expense_id=eid,
+                action="batch_approved",
+                actor="Manager",
+                details=json.dumps({
+                    "batch": True,
+                    "parallel": True,
+                    "fee_sponsored": True,
+                    "amount": expense.amount,
+                }),
+                tx_hash=result.get("tx_hash"),
+                memo=expense.memo,
+            )
+            db.add(audit)
+            approved_count += 1
+
+    db.commit()
+
+    total_amount = sum(
+        r.get("amount", 0) for r in batch_result.get("results", []) if r.get("success")
+    )
+
+    logger.info(
+        f"⚡ Batch approved: {approved_count}/{len(payments)} expenses | "
+        f"Total: ${total_amount:,.2f} | Parallel: True"
+    )
+
+    return {
+        "message": f"Batch approved {approved_count} expenses",
+        "approved": approved_count,
+        "failed": batch_result.get("failed", 0),
+        "total_amount": round(total_amount, 2),
+        "parallel_execution": True,
+        "fee_sponsored": True,
+        "transactions": [
+            {
+                "expense_id": r.get("expense_id"),
+                "tx_hash": r.get("tx_hash"),
+                "amount": r.get("amount"),
+                "tempo_tx_url": r.get("tempo_tx_url"),
+            }
+            for r in batch_result.get("results", []) if r.get("success")
+        ],
+    }

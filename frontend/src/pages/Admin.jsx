@@ -1,12 +1,14 @@
 import { useState, useEffect } from 'react';
-import { Shield, Users, Wallet } from 'lucide-react';
-import { getEmployees, getSpendingSummary } from '../api/client';
+import { Shield, Users, Wallet, Zap, CheckCircle, ExternalLink, Loader2 } from 'lucide-react';
+import { getEmployees, getSpendingSummary, batchApprove } from '../api/client';
 import ExpenseList from '../components/ExpenseList';
 
 export default function Admin() {
   const [employees, setEmployees] = useState([]);
   const [selectedEmployee, setSelectedEmployee] = useState(null);
   const [spending, setSpending] = useState(null);
+  const [batchLoading, setBatchLoading] = useState(false);
+  const [batchResult, setBatchResult] = useState(null);
 
   useEffect(() => {
     loadEmployees();
@@ -33,6 +35,21 @@ export default function Admin() {
   const handleSelectEmployee = (emp) => {
     setSelectedEmployee(emp);
     loadSpending(emp.employee_id);
+  };
+
+  const handleBatchApprove = async () => {
+    setBatchLoading(true);
+    setBatchResult(null);
+    try {
+      const res = await batchApprove();
+      setBatchResult(res.data);
+    } catch (err) {
+      setBatchResult({
+        error: err.response?.data?.detail || 'Batch approval failed',
+      });
+    } finally {
+      setBatchLoading(false);
+    }
   };
 
   return (
@@ -145,7 +162,91 @@ export default function Admin() {
 
           {/* Expenses needing review */}
           <div className="bg-slate-800 rounded-xl border border-slate-700 p-5">
-            <h3 className="text-lg font-semibold text-white mb-4">⏳ Expenses Pending Review</h3>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-white">⏳ Expenses Pending Review</h3>
+
+              {/* Batch Approve Button */}
+              <button
+                onClick={handleBatchApprove}
+                disabled={batchLoading}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all
+                  ${batchLoading
+                    ? 'bg-slate-600 text-slate-400 cursor-wait'
+                    : 'bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 text-white shadow-lg shadow-green-500/20 hover:shadow-green-500/40'
+                  }`}
+              >
+                {batchLoading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    <Zap className="w-4 h-4" />
+                    Batch Approve All
+                  </>
+                )}
+              </button>
+            </div>
+
+            {/* Batch Result */}
+            {batchResult && !batchResult.error && (
+              <div className="mb-4 bg-green-900/20 border border-green-800/30 rounded-xl p-4 animate-slideUp">
+                <div className="flex items-center gap-2 mb-3">
+                  <CheckCircle className="w-5 h-5 text-green-400" />
+                  <span className="text-green-400 font-semibold">
+                    Batch Approved: {batchResult.approved} expenses
+                  </span>
+                  <span className="text-slate-400 text-sm">
+                    · ${batchResult.total_amount?.toLocaleString()} total
+                  </span>
+                </div>
+
+                {/* Parallel execution badge */}
+                {batchResult.parallel_execution && (
+                  <div className="flex items-center gap-2 mb-3 text-xs">
+                    <span className="flex items-center gap-1 bg-blue-500/10 text-blue-400 px-2 py-1 rounded-full">
+                      <Zap className="w-3 h-3" /> Parallel Execution
+                    </span>
+                    <span className="flex items-center gap-1 bg-green-500/10 text-green-400 px-2 py-1 rounded-full">
+                      <Shield className="w-3 h-3" /> Gas Fees Sponsored
+                    </span>
+                  </div>
+                )}
+
+                {/* Transaction list */}
+                {batchResult.transactions?.length > 0 && (
+                  <div className="space-y-2">
+                    {batchResult.transactions.map((tx, i) => (
+                      <div key={i} className="flex items-center justify-between bg-slate-800/60 rounded-lg px-3 py-2 text-xs">
+                        <span className="font-mono text-slate-300">{tx.expense_id}</span>
+                        <span className="text-green-400">${tx.amount?.toFixed(2)}</span>
+                        <a
+                          href={tx.tempo_tx_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-1 text-blue-400 hover:text-blue-300"
+                        >
+                          <ExternalLink className="w-3 h-3" />
+                          <span className="font-mono">{tx.tx_hash?.substring(0, 14)}...</span>
+                        </a>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {batchResult.approved === 0 && (
+                  <p className="text-slate-400 text-sm">{batchResult.message}</p>
+                )}
+              </div>
+            )}
+
+            {batchResult?.error && (
+              <div className="mb-4 bg-red-500/10 border border-red-500/30 rounded-lg p-3">
+                <p className="text-red-400 text-sm">❌ {batchResult.error}</p>
+              </div>
+            )}
+
             <ExpenseList filterStatus="manager_review" showActions={true} />
           </div>
         </div>
@@ -153,4 +254,3 @@ export default function Admin() {
     </div>
   );
 }
-

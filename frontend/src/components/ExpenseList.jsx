@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { RefreshCw, ExternalLink, CheckCircle, Clock, XCircle, AlertTriangle } from 'lucide-react';
+import { RefreshCw, ExternalLink, CheckCircle, Clock, XCircle, AlertTriangle, Zap, Shield } from 'lucide-react';
 import { getExpenses, approveExpense, rejectExpense } from '../api/client';
 import RiskGauge from './RiskGauge';
 
@@ -18,6 +18,7 @@ export default function ExpenseList({ filterStatus, showActions }) {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [selectedExpense, setSelectedExpense] = useState(null);
+  const [actionLoading, setActionLoading] = useState(null);
 
   useEffect(() => {
     loadExpenses();
@@ -39,20 +40,26 @@ export default function ExpenseList({ filterStatus, showActions }) {
   };
 
   const handleApprove = async (expenseId) => {
+    setActionLoading(expenseId);
     try {
       await approveExpense(expenseId);
       loadExpenses();
     } catch (err) {
       alert(err.response?.data?.detail || 'Approval failed');
+    } finally {
+      setActionLoading(null);
     }
   };
 
   const handleReject = async (expenseId) => {
+    setActionLoading(expenseId);
     try {
       await rejectExpense(expenseId);
       loadExpenses();
     } catch (err) {
       alert(err.response?.data?.detail || 'Rejection failed');
+    } finally {
+      setActionLoading(null);
     }
   };
 
@@ -108,6 +115,13 @@ export default function ExpenseList({ filterStatus, showActions }) {
                       <Icon className="w-3 h-3" />
                       {sc.label}
                     </span>
+                    {/* Fee sponsored badge */}
+                    {expense.tx_hash && (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-green-500/10 text-green-400">
+                        <Zap className="w-2.5 h-2.5" />
+                        Gas-Free
+                      </span>
+                    )}
                   </div>
                   <p className="text-white font-medium mt-1">
                     ${expense.amount.toFixed(2)}
@@ -123,13 +137,20 @@ export default function ExpenseList({ filterStatus, showActions }) {
                   <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
                     <button
                       onClick={() => handleApprove(expense.expense_id)}
-                      className="px-3 py-1.5 bg-green-600 hover:bg-green-500 text-white text-xs rounded-lg font-medium transition-colors"
+                      disabled={actionLoading === expense.expense_id}
+                      className="px-3 py-1.5 bg-green-600 hover:bg-green-500 text-white text-xs rounded-lg font-medium transition-colors disabled:opacity-50 flex items-center gap-1"
                     >
+                      {actionLoading === expense.expense_id ? (
+                        <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      ) : (
+                        <CheckCircle className="w-3 h-3" />
+                      )}
                       Approve
                     </button>
                     <button
                       onClick={() => handleReject(expense.expense_id)}
-                      className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs rounded-lg font-medium transition-colors"
+                      disabled={actionLoading === expense.expense_id}
+                      className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs rounded-lg font-medium transition-colors disabled:opacity-50"
                     >
                       Reject
                     </button>
@@ -152,33 +173,59 @@ export default function ExpenseList({ filterStatus, showActions }) {
 
               {/* Expanded details */}
               {selectedExpense?.expense_id === expense.expense_id && (
-                <div className="mt-4 pt-4 border-t border-slate-700 grid grid-cols-2 gap-3 text-sm">
-                  <div>
-                    <span className="text-slate-400">Reason: </span>
-                    <span className="text-slate-200">{expense.approval_reason || 'N/A'}</span>
+                <div className="mt-4 pt-4 border-t border-slate-700 space-y-3 animate-fadeIn">
+                  {/* AI Reason */}
+                  {expense.approval_reason && (
+                    <div className="bg-slate-900/60 rounded-lg p-3">
+                      <p className="text-xs text-slate-400 mb-1 flex items-center gap-1">
+                        <Shield className="w-3 h-3" /> AgentFin's Decision
+                      </p>
+                      <p className="text-sm text-slate-200">{expense.approval_reason}</p>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    <div>
+                      <span className="text-slate-400">AI Category: </span>
+                      <span className="text-slate-200">{expense.ai_category || 'N/A'}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400">Anomaly Score: </span>
+                      <span className="text-slate-200">{((expense.anomaly_score || 0) * 100).toFixed(1)}%</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400">Approved By: </span>
+                      <span className="text-slate-200">{expense.approved_by || 'Pending'}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400">Receipt: </span>
+                      <span className="text-slate-200">{expense.receipt_attached ? '✅ Attached' : '❌ Missing'}</span>
+                    </div>
                   </div>
-                  <div>
-                    <span className="text-slate-400">AI Category: </span>
-                    <span className="text-slate-200">{expense.ai_category || 'N/A'}</span>
-                  </div>
-                  <div>
-                    <span className="text-slate-400">Anomaly Score: </span>
-                    <span className="text-slate-200">{((expense.anomaly_score || 0) * 100).toFixed(1)}%</span>
-                  </div>
-                  <div>
-                    <span className="text-slate-400">Approved By: </span>
-                    <span className="text-slate-200">{expense.approved_by || 'Pending'}</span>
-                  </div>
+
+                  {/* Memo */}
                   {expense.memo && (
-                    <div className="col-span-2 bg-slate-900 rounded-lg p-3 mt-1">
+                    <div className="bg-slate-900 rounded-lg p-3">
                       <p className="text-xs text-slate-400 mb-1">📝 On-Chain Memo</p>
                       <code className="text-xs text-blue-300 font-mono break-all">{expense.memo}</code>
                     </div>
                   )}
+
+                  {/* Risk factors */}
                   {expense.risk_factors && expense.risk_factors !== '[]' && (
-                    <div className="col-span-2">
-                      <span className="text-slate-400">Risk Factors: </span>
+                    <div>
+                      <span className="text-slate-400 text-sm">Risk Factors: </span>
                       <span className="text-orange-300 text-xs">{expense.risk_factors}</span>
+                    </div>
+                  )}
+
+                  {/* Fee Sponsorship info */}
+                  {expense.tx_hash && (
+                    <div className="flex items-center gap-2 bg-green-900/10 border border-green-800/20 rounded-lg px-3 py-2">
+                      <Zap className="w-3.5 h-3.5 text-green-400" />
+                      <p className="text-xs text-green-300/80">
+                        Transaction fees sponsored by AgentFin — employee paid $0 in gas fees
+                      </p>
                     </div>
                   )}
                 </div>
@@ -196,4 +243,3 @@ export default function ExpenseList({ filterStatus, showActions }) {
     </div>
   );
 }
-
