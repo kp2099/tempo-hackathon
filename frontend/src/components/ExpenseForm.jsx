@@ -23,7 +23,8 @@ const CATEGORIES = [
 
 const PROCESSING_STAGES = [
   { icon: '🔍', label: 'Analyzing expense data...', sublabel: 'Extracting features & behavioral patterns' },
-  { icon: '🧠', label: 'Running AI risk scoring...', sublabel: 'XGBoost model + Isolation Forest anomaly detection' },
+  { icon: '�', label: 'Verifying receipt via OCR...', sublabel: 'Cross-checking amount, merchant & date' },
+  { icon: '�🧠', label: 'Running AI risk scoring...', sublabel: 'XGBoost model + Isolation Forest anomaly detection' },
   { icon: '📋', label: 'Checking policy compliance...', sublabel: 'Spending limits, receipt rules, duplicate detection' },
   { icon: '⚖️', label: 'Making autonomous decision...', sublabel: 'Three-tier approval: auto-approve / review / reject' },
   { icon: '💰', label: 'Executing on Tempo blockchain...', sublabel: 'TIP-20 transferWithMemo with on-chain audit trail' },
@@ -42,6 +43,7 @@ export default function ExpenseForm() {
   const [receiptFile, setReceiptFile] = useState(null);
   const [receiptPreview, setReceiptPreview] = useState(null);
   const [uploadingReceipt, setUploadingReceipt] = useState(false);
+  const [ocrResult, setOcrResult] = useState(null);
   const fileInputRef = useRef(null);
   const resultRef = useRef(null);
   const [form, setForm] = useState({
@@ -85,6 +87,7 @@ export default function ExpenseForm() {
 
     setReceiptFile(file);
     setUploadingReceipt(true);
+    setOcrResult(null);
 
     try {
       const res = await uploadReceipt(file);
@@ -93,6 +96,18 @@ export default function ExpenseForm() {
         receipt_attached: true,
         receipt_file_path: res.data.filepath,
       }));
+
+      // Capture OCR results if available
+      if (res.data.ocr?.ocr_success) {
+        setOcrResult(res.data.ocr);
+        // Auto-fill form fields from OCR if they're empty
+        if (res.data.ocr.ocr_amount && !form.amount) {
+          setForm(f => ({ ...f, amount: String(res.data.ocr.ocr_amount) }));
+        }
+        if (res.data.ocr.ocr_merchant && !form.merchant) {
+          setForm(f => ({ ...f, merchant: res.data.ocr.ocr_merchant }));
+        }
+      }
     } catch (err) {
       console.error('Receipt upload failed:', err);
       // Still mark as attached even if upload fails
@@ -105,6 +120,7 @@ export default function ExpenseForm() {
   const removeReceipt = () => {
     setReceiptFile(null);
     setReceiptPreview(null);
+    setOcrResult(null);
     setForm(f => ({ ...f, receipt_attached: false, receipt_file_path: '' }));
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
@@ -503,27 +519,92 @@ export default function ExpenseForm() {
                   </button>
                 </div>
               ) : (
-                <div className="flex items-center gap-3 bg-green-900/20 border border-green-800/30 rounded-lg px-3 py-2.5">
-                  {receiptPreview ? (
-                    <img src={receiptPreview} alt="Receipt" className="w-10 h-10 object-cover rounded" />
-                  ) : (
-                    <FileText className="w-10 h-10 text-green-400" />
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm text-green-400 font-medium truncate">{receiptFile.name}</p>
-                    <p className="text-xs text-green-300/60">
-                      {(receiptFile.size / 1024).toFixed(0)} KB
-                      {uploadingReceipt && ' • Uploading...'}
-                      {!uploadingReceipt && ' • ✅ Uploaded'}
-                    </p>
+                <div className="space-y-2">
+                  <div className="flex items-center gap-3 bg-green-900/20 border border-green-800/30 rounded-lg px-3 py-2.5">
+                    {receiptPreview ? (
+                      <img src={receiptPreview} alt="Receipt" className="w-10 h-10 object-cover rounded" />
+                    ) : (
+                      <FileText className="w-10 h-10 text-green-400" />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-green-400 font-medium truncate">{receiptFile.name}</p>
+                      <p className="text-xs text-green-300/60">
+                        {(receiptFile.size / 1024).toFixed(0)} KB
+                        {uploadingReceipt && ' • Uploading & running OCR...'}
+                        {!uploadingReceipt && !ocrResult && ' • ✅ Uploaded'}
+                        {!uploadingReceipt && ocrResult?.ocr_success && ' • ✅ Uploaded • 🔍 OCR Complete'}
+                        {!uploadingReceipt && ocrResult && !ocrResult.ocr_success && ' • ✅ Uploaded • ⚠️ OCR Unavailable'}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={removeReceipt}
+                      className="p-1 text-slate-400 hover:text-red-400 transition-colors"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={removeReceipt}
-                    className="p-1 text-slate-400 hover:text-red-400 transition-colors"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
+
+                  {/* OCR Results Card */}
+                  {ocrResult?.ocr_success && (
+                    <div className="bg-blue-900/15 border border-blue-800/30 rounded-lg p-3 animate-fadeIn">
+                      <p className="text-xs text-blue-400 font-medium mb-2 flex items-center gap-1">
+                        🔍 Receipt OCR — Extracted Data
+                        <span className="text-blue-400/50 ml-auto">
+                          Confidence: {((ocrResult.ocr_confidence || 0) * 100).toFixed(0)}%
+                        </span>
+                      </p>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        {ocrResult.ocr_amount != null && (
+                          <div className="bg-slate-800/60 rounded px-2 py-1.5">
+                            <span className="text-slate-400">Amount: </span>
+                            <span className={`font-medium ${
+                              form.amount && Math.abs(ocrResult.ocr_amount - parseFloat(form.amount)) / Math.max(parseFloat(form.amount), 0.01) > 0.15
+                                ? 'text-red-400' : 'text-green-400'
+                            }`}>
+                              ${ocrResult.ocr_amount.toFixed(2)}
+                              {form.amount && Math.abs(ocrResult.ocr_amount - parseFloat(form.amount)) / Math.max(parseFloat(form.amount), 0.01) > 0.15 && (
+                                <span className="text-red-400/80 ml-1">⚠️ mismatch</span>
+                              )}
+                              {form.amount && Math.abs(ocrResult.ocr_amount - parseFloat(form.amount)) / Math.max(parseFloat(form.amount), 0.01) <= 0.15 && (
+                                <span className="text-green-400/80 ml-1">✓</span>
+                              )}
+                            </span>
+                          </div>
+                        )}
+                        {ocrResult.ocr_merchant && (
+                          <div className="bg-slate-800/60 rounded px-2 py-1.5">
+                            <span className="text-slate-400">Merchant: </span>
+                            <span className="text-slate-200 font-medium">{ocrResult.ocr_merchant}</span>
+                          </div>
+                        )}
+                        {ocrResult.ocr_date && (
+                          <div className="bg-slate-800/60 rounded px-2 py-1.5">
+                            <span className="text-slate-400">Date: </span>
+                            <span className="text-slate-200 font-medium">{ocrResult.ocr_date}</span>
+                          </div>
+                        )}
+                        {ocrResult.ocr_tax != null && (
+                          <div className="bg-slate-800/60 rounded px-2 py-1.5">
+                            <span className="text-slate-400">Tax: </span>
+                            <span className="text-slate-200 font-medium">${ocrResult.ocr_tax.toFixed(2)}</span>
+                          </div>
+                        )}
+                        {ocrResult.ocr_item_count > 0 && (
+                          <div className="bg-slate-800/60 rounded px-2 py-1.5">
+                            <span className="text-slate-400">Line Items: </span>
+                            <span className="text-slate-200 font-medium">{ocrResult.ocr_item_count}</span>
+                          </div>
+                        )}
+                        {ocrResult.ocr_currency && (
+                          <div className="bg-slate-800/60 rounded px-2 py-1.5">
+                            <span className="text-slate-400">Currency: </span>
+                            <span className="text-slate-200 font-medium">{ocrResult.ocr_currency}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -639,6 +720,73 @@ export default function ExpenseForm() {
                         Model: {result.model_used}
                       </p>
                     )}
+                  </div>
+                )}
+
+                {/* OCR Verification Results */}
+                {result.ocr_verification && (
+                  <div className="mt-4 bg-slate-900/40 rounded-lg p-3 border border-slate-700/50">
+                    <p className="text-xs text-slate-400 mb-2 flex items-center gap-1">
+                      🧾 Receipt OCR Verification
+                      <span className="text-slate-500 ml-auto">
+                        Confidence: {((result.ocr_verification.ocr_confidence || 0) * 100).toFixed(0)}%
+                      </span>
+                    </p>
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      {result.ocr_verification.ocr_amount != null && (
+                        <div className={`rounded px-2 py-1.5 ${
+                          result.ocr_verification.amount_mismatch_flag
+                            ? 'bg-red-900/30 border border-red-800/30'
+                            : 'bg-green-900/20 border border-green-800/20'
+                        }`}>
+                          <span className="text-slate-400">Receipt Amount: </span>
+                          <span className={`font-medium ${
+                            result.ocr_verification.amount_mismatch_flag ? 'text-red-400' : 'text-green-400'
+                          }`}>
+                            ${result.ocr_verification.ocr_amount.toFixed(2)}
+                            {result.ocr_verification.amount_mismatch_flag
+                              ? ` ⚠️ ${(result.ocr_verification.amount_mismatch * 100).toFixed(0)}% off`
+                              : ' ✓ matches'}
+                          </span>
+                        </div>
+                      )}
+                      {result.ocr_verification.ocr_merchant && (
+                        <div className={`rounded px-2 py-1.5 ${
+                          result.ocr_verification.merchant_mismatch
+                            ? 'bg-yellow-900/20 border border-yellow-800/20'
+                            : 'bg-green-900/20 border border-green-800/20'
+                        }`}>
+                          <span className="text-slate-400">Receipt Merchant: </span>
+                          <span className={`font-medium ${
+                            result.ocr_verification.merchant_mismatch ? 'text-yellow-400' : 'text-green-400'
+                          }`}>
+                            {result.ocr_verification.ocr_merchant}
+                            {result.ocr_verification.merchant_mismatch ? ' ⚠️' : ' ✓'}
+                          </span>
+                        </div>
+                      )}
+                      {result.ocr_verification.ocr_date && (
+                        <div className={`rounded px-2 py-1.5 ${
+                          result.ocr_verification.date_mismatch_flag
+                            ? 'bg-yellow-900/20 border border-yellow-800/20'
+                            : 'bg-slate-800/60'
+                        }`}>
+                          <span className="text-slate-400">Receipt Date: </span>
+                          <span className={`font-medium ${
+                            result.ocr_verification.date_mismatch_flag ? 'text-yellow-400' : 'text-slate-200'
+                          }`}>
+                            {result.ocr_verification.ocr_date}
+                            {result.ocr_verification.date_mismatch_flag && ` ⚠️ ${result.ocr_verification.date_gap_days}d ago`}
+                          </span>
+                        </div>
+                      )}
+                      {result.ocr_verification.ocr_tax != null && (
+                        <div className="bg-slate-800/60 rounded px-2 py-1.5">
+                          <span className="text-slate-400">Tax: </span>
+                          <span className="text-slate-200 font-medium">${result.ocr_verification.ocr_tax.toFixed(2)}</span>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
 

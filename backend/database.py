@@ -76,6 +76,14 @@ class ExpenseDB(Base):
     receipt_attached = Column(Boolean, default=False)
     receipt_file_path = Column(String(300), nullable=True)  # Path to uploaded receipt
 
+    # OCR Data (extracted from receipt image)
+    ocr_amount = Column(Float, nullable=True)
+    ocr_merchant = Column(String(100), nullable=True)
+    ocr_date = Column(String(20), nullable=True)
+    ocr_confidence = Column(Float, nullable=True)
+    ocr_raw_text = Column(Text, nullable=True)
+    ocr_data = Column(Text, nullable=True)  # Full OCR result as JSON
+
     # AI Scoring
     risk_score = Column(Float, nullable=True)
     anomaly_score = Column(Float, nullable=True)

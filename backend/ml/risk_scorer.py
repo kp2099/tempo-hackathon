@@ -301,6 +301,53 @@ class RiskScorer:
             score += 0.04
             factors.append("Short/vague description for high amount")
 
+        # ─── OCR Verification Signals ───
+        if expense_data.get("ocr_success"):
+            # Amount mismatch (strongest OCR fraud signal)
+            amt_mismatch = float(expense_data.get("amount_mismatch", 0))
+            if amt_mismatch > 0.50:
+                score += 0.25
+                ocr_amt = expense_data.get("ocr_amount", "?")
+                factors.append(
+                    f"Receipt amount (${ocr_amt}) differs from submitted "
+                    f"amount (${amount:.2f}) by {amt_mismatch:.0%}"
+                )
+            elif amt_mismatch > 0.15:
+                score += 0.12
+                ocr_amt = expense_data.get("ocr_amount", "?")
+                factors.append(
+                    f"Receipt amount (${ocr_amt}) differs from submitted "
+                    f"amount (${amount:.2f}) by {amt_mismatch:.0%}"
+                )
+
+            # Merchant mismatch
+            if expense_data.get("merchant_mismatch"):
+                score += 0.10
+                ocr_merch = expense_data.get("ocr_merchant", "?")
+                factors.append(
+                    f"Receipt merchant '{ocr_merch}' doesn't match "
+                    f"submitted merchant"
+                )
+
+            # Stale/reused receipt (date too far from submission)
+            date_gap = int(expense_data.get("date_gap_days", 0))
+            if date_gap > 90:
+                score += 0.15
+                factors.append(
+                    f"Receipt is {date_gap} days old — possible reused receipt"
+                )
+            elif date_gap > 30:
+                score += 0.06
+                factors.append(f"Receipt date is {date_gap} days ago")
+
+            # Low OCR confidence (blurry/edited image)
+            ocr_conf = float(expense_data.get("ocr_confidence", 1.0))
+            if ocr_conf < 0.3 and amount > 200:
+                score += 0.06
+                factors.append(
+                    f"Low receipt quality (OCR confidence: {ocr_conf:.0%})"
+                )
+
         return min(score, 1.0), factors
 
     # ------------------------------------------------------------------
