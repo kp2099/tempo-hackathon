@@ -5,11 +5,11 @@ Three-Layer Ensemble Risk Scorer
 Combines three independent scoring layers into a single calibrated
 fraud probability:
 
-  Layer 1 — Distilled XGBoost (0.15 weight)
-    Trained on 284,807 real credit card transactions via knowledge
-    distillation.  17 features derived from Amount + Time.  Low weight
-    because the Kaggle fraud signals live in PCA features, not
-    amount/time — this layer is a minor supplementary signal.
+  Layer 1 — Student XGBoost Classifier (0.15 weight)
+    Trained directly on binary fraud labels from 284,807 real credit
+    card transactions.  17 features derived from Amount + Time.
+    Modest AUC (~0.55-0.70) because fraud signals are mostly in PCA
+    features, but learns real amount/time correlations with fraud.
 
   Layer 2 — Isolation Forest (0.35 weight)
     Unsupervised anomaly detector.  Trained on Kaggle legit
@@ -45,20 +45,18 @@ from ml.feature_engineering import (
 logger = logging.getLogger("TempoExpenseAI.RiskScorer")
 
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
-STUDENT_PATH = os.path.join(MODEL_DIR, "student_risk_model.json")
+STUDENT_PATH = os.path.join(MODEL_DIR, "student_risk_model.pkl")
 IFOREST_PATH = os.path.join(MODEL_DIR, "isolation_forest.pkl")
 STATS_PATH = os.path.join(MODEL_DIR, "amount_stats.pkl")
 
 # Ensemble weights
-# NOTE: The distilled XGBoost was trained on Kaggle PCA features (V1-V28) via
-# knowledge distillation to 17 amount/time features.  Since fraud signals in
-# that dataset live almost entirely in the PCA space, the student produces
-# near-zero scores for all inputs.  We keep it as a minor signal but rely
-# primarily on the Isolation Forest (learned spending patterns) and the
-# Policy Engine (transparent domain rules) for real expense risk.
-W_DISTILLED = 0.15
+# The student XGBoost is now trained directly on binary fraud labels (not
+# distilled), producing non-zero probabilities.  It has modest AUC from
+# amount/time features.  Isolation Forest catches spending anomalies.
+# Policy Engine provides transparent domain rules.
+W_STUDENT = 0.20
 W_ISOLATION = 0.35
-W_POLICY = 0.50
+W_POLICY = 0.45
 
 
 class RiskScorer:
@@ -89,15 +87,14 @@ class RiskScorer:
             stats = joblib.load(STATS_PATH)
             set_amount_stats(stats["mean"], stats["std"])
 
-        # Student (distilled XGBoost regressor — load as raw Booster)
+        # Student (XGBClassifier trained on binary fraud labels, saved via joblib)
         if os.path.exists(STUDENT_PATH):
             try:
-                self.student_model = xgb.Booster()
-                self.student_model.load_model(STUDENT_PATH)
+                self.student_model = joblib.load(STUDENT_PATH)
                 self.student_loaded = True
                 logger.info(
-                    "✅ Distilled student model loaded "
-                    "(trained on 284K real transactions)"
+                    "✅ Student XGBoost classifier loaded "
+                    "(trained on 284K real transactions, binary labels)"
                 )
             except Exception as e:
                 logger.warning(f"⚠️ Could not load student model: {e}")
@@ -131,24 +128,24 @@ class RiskScorer:
             logger.info(f"   IF calibrated: offset={self._iforest_offset:.4f}")
 
     # ------------------------------------------------------------------
-    # Layer 1: Distilled XGBoost
+    # Layer 1: Student XGBoost Classifier
     # ------------------------------------------------------------------
 
-    def _distilled_score(self, expense_data: dict) -> float:
+    def _student_score(self, expense_data: dict) -> float:
         """
-        Predict fraud probability using the distilled student model.
+        Predict fraud probability using the student XGBoost classifier.
 
-        The student was trained on teacher soft labels from 284,807 real
-        transactions.  It uses 17 features derivable from amount + time.
+        Trained directly on binary fraud labels from 284,807 real
+        transactions.  Uses 17 features derivable from amount + time.
+        Returns predict_proba[:,1] — the fraud class probability.
         """
         if not self.student_loaded or self.student_model is None:
             return self._heuristic_amount_score(expense_data)
 
         try:
             features = engineer_kaggle_features_single(expense_data)
-            dmatrix = xgb.DMatrix(features, feature_names=KAGGLE_FEATURE_NAMES)
-            raw = float(self.student_model.predict(dmatrix)[0])
-            return max(0.0, min(1.0, raw))
+            proba = self.student_model.predict_proba(features)
+            return max(0.0, min(1.0, float(proba[0][1])))
         except Exception as e:
             logger.warning(f"Student prediction failed: {e}")
             return self._heuristic_amount_score(expense_data)
@@ -365,8 +362,8 @@ class RiskScorer:
           - layer_scores: breakdown of each layer's contribution
           - model_used: description of which models contributed
         """
-        # Layer 1: Distilled XGBoost
-        distilled = self._distilled_score(expense_data)
+        # Layer 1: Student XGBoost Classifier
+        student = self._student_score(expense_data)
 
         # Layer 2: Isolation Forest
         isolation = self._isolation_score(expense_data)
@@ -376,7 +373,7 @@ class RiskScorer:
 
         # Weighted ensemble
         risk_score = (
-            W_DISTILLED * distilled
+            W_STUDENT * student
             + W_ISOLATION * isolation
             + W_POLICY * policy
         )
@@ -393,7 +390,7 @@ class RiskScorer:
         # Model description
         models = []
         if self.student_loaded:
-            models.append("distilled_xgboost(284K_real_tx)")
+            models.append("xgboost_classifier(284K_real_tx)")
         else:
             models.append("heuristic_amount")
         if self.iforest_loaded:
@@ -408,12 +405,12 @@ class RiskScorer:
             "risk_factors": risk_factors,
             "model_used": " + ".join(models),
             "layer_scores": {
-                "distilled_xgboost": round(distilled, 4),
+                "distilled_xgboost": round(student, 4),
                 "isolation_forest": round(isolation, 4),
                 "policy_engine": round(policy, 4),
             },
             "ensemble_weights": {
-                "distilled": W_DISTILLED,
+                "student": W_STUDENT,
                 "isolation": W_ISOLATION,
                 "policy": W_POLICY,
             },

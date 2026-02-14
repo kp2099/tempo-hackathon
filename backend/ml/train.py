@@ -9,10 +9,11 @@ transactions from European cardholders, 492 real fraud cases):
    + Time).  Achieves ~0.98 AUC because it sees V1-V28.  This model is
    used ONLY during training to produce soft labels.
 
-2. **Student XGBoost** — trained on 17 Kaggle-mappable features (derived
-   from Amount + Time ONLY) with the teacher's soft probabilities as
-   targets.  This is the model we use at inference, because we CAN
-   compute the same 17 features from live expense data.
+2. **Student XGBoost** — trained DIRECTLY on binary fraud labels using
+   17 Kaggle-mappable features (derived from Amount + Time ONLY).
+   Knowledge distillation was abandoned because fraud signal lives in
+   V1-V28 PCA features, not Amount/Time.  Direct classification with
+   scale_pos_weight learns the weak-but-real amount/time correlations.
 
 3. **Isolation Forest** — unsupervised anomaly detector trained on the
    legitimate-only Amount distribution from Kaggle.  At runtime it is
@@ -32,7 +33,7 @@ import pandas as pd
 import xgboost as xgb
 from sklearn.ensemble import IsolationForest, RandomForestClassifier
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, roc_auc_score, mean_squared_error
+from sklearn.metrics import classification_report, roc_auc_score
 from sklearn.preprocessing import LabelEncoder
 import joblib
 import logging
@@ -115,41 +116,43 @@ def train_student(
     teacher: xgb.XGBClassifier,
 ) -> dict:
     """
-    Train the student XGBoost via knowledge distillation.
+    Train the student XGBoost DIRECTLY on binary fraud labels.
 
-    Input features:  17 Kaggle-mappable features (Amount + Time derived)
-    Target:          Teacher's soft probabilities (NOT binary labels)
+    Knowledge distillation failed because the teacher's fraud signal lives
+    entirely in PCA features (V1-V28) that the student can't see.  The
+    student's 17 Amount+Time features have negligible correlation with the
+    teacher's soft probabilities, so the regressor converged to "always
+    predict 0" — minimizing MSE for the 99.83% non-fraud majority.
 
-    The student learns to approximate the teacher's fraud probability
-    using only features we can compute from live expense data.
+    Fix: Train as a CLASSIFIER on real binary labels with scale_pos_weight.
+    Binary cross-entropy + class balancing forces the model to learn whatever
+    weak-but-real fraud correlations exist in amount/time patterns (unusual
+    amounts, round numbers, nighttime transactions).  The result is modest
+    AUC (~0.55-0.70) but non-zero probabilities that meaningfully contribute
+    to the 3-layer ensemble.
     """
-    logger.info("🎓 Training STUDENT model via knowledge distillation...")
-
-    # Get teacher's soft labels for the ENTIRE dataset
-    X_teacher = df[KAGGLE_ALL_FEATURES].values
-    soft_labels = teacher.predict_proba(X_teacher)[:, 1]
+    logger.info("🎓 Training STUDENT model (direct classification on binary labels)...")
 
     # Engineer our 17 features from Amount + Time
     X_student_df = engineer_kaggle_features_batch(df)
     X_student = X_student_df.values
+    y_binary = df["Class"].values  # Real binary labels, NOT teacher soft labels
 
-    # Split (using same random state for reproducibility)
     X_train, X_test, y_train, y_test = train_test_split(
-        X_student, soft_labels, test_size=0.2, random_state=42,
+        X_student, y_binary, test_size=0.2, random_state=42, stratify=y_binary,
     )
 
-    # Also keep the binary labels for evaluation
-    binary_labels = df["Class"].values
-    _, y_test_binary = train_test_split(
-        binary_labels, test_size=0.2, random_state=42,
-    )
+    # Classifier with class imbalance handling
+    n_neg = len(y_train[y_train == 0])
+    n_pos = max(len(y_train[y_train == 1]), 1)
 
-    # Student is a REGRESSOR — predicts continuous probability
-    student = xgb.XGBRegressor(
+    student = xgb.XGBClassifier(
         n_estimators=300,
         max_depth=6,
         learning_rate=0.05,
-        objective="reg:squarederror",
+        objective="binary:logistic",
+        eval_metric="auc",
+        scale_pos_weight=n_neg / n_pos,
         random_state=42,
         n_jobs=-1,
     )
@@ -160,39 +163,39 @@ def train_student(
         verbose=False,
     )
 
-    # Evaluate distillation quality
-    y_pred = student.predict(X_test)
-    y_pred_clipped = np.clip(y_pred, 0, 1)
-    mse = mean_squared_error(y_test, y_pred_clipped)
+    # Evaluate
+    y_proba = student.predict_proba(X_test)[:, 1]
+    y_pred_binary = (y_proba > 0.5).astype(int)
+    auc = roc_auc_score(y_test, y_proba)
 
-    # Also evaluate as a classifier (threshold at 0.5)
-    y_pred_binary = (y_pred_clipped > 0.5).astype(int)
-    auc = roc_auc_score(y_test_binary, y_pred_clipped)
-
-    logger.info(f"   Student distillation MSE: {mse:.6f}")
-    logger.info(f"   Student AUC-ROC (vs real labels): {auc:.4f}")
+    logger.info(f"   Student AUC-ROC: {auc:.4f} (Amount+Time features only)")
 
     report = classification_report(
-        y_test_binary, y_pred_binary, output_dict=True, zero_division=0
+        y_test, y_pred_binary, output_dict=True, zero_division=0
     )
     precision = report.get("1", {}).get("precision", 0)
     recall = report.get("1", {}).get("recall", 0)
     logger.info(f"   Precision: {precision:.4f}  |  Recall: {recall:.4f}")
+
+    # Log probability distribution to verify non-zero outputs
+    logger.info(f"   Proba stats: mean={y_proba.mean():.6f}, "
+                f"max={y_proba.max():.4f}, "
+                f"p95={np.percentile(y_proba, 95):.6f}, "
+                f"p99={np.percentile(y_proba, 99):.6f}")
 
     # Feature importance
     importance = dict(zip(KAGGLE_FEATURE_NAMES, student.feature_importances_))
     top_features = sorted(importance.items(), key=lambda x: x[1], reverse=True)[:5]
     logger.info(f"   Top features: {top_features}")
 
-    # Save student model
+    # Save full estimator with joblib (avoids xgboost/sklearn tag issues)
     os.makedirs(MODEL_DIR, exist_ok=True)
-    student_path = os.path.join(MODEL_DIR, "student_risk_model.json")
-    student.save_model(student_path)
+    student_path = os.path.join(MODEL_DIR, "student_risk_model.pkl")
+    joblib.dump(student, student_path)
     logger.info(f"   Saved student → {student_path}")
 
     return {
         "auc": auc,
-        "mse": mse,
         "precision": precision,
         "recall": recall,
         "model_path": student_path,
@@ -369,8 +372,8 @@ def train_all():
 
     logger.info("=" * 65)
     logger.info("✅ All models trained successfully!")
-    logger.info(f"   Student AUC (distilled from 284K real tx): {student_results['auc']:.4f}")
-    logger.info(f"   Student MSE (distillation quality):        {student_results['mse']:.6f}")
+    logger.info(f"   Student AUC (direct classif. on 284K tx):  {student_results['auc']:.4f}")
+    logger.info(f"   Student Precision / Recall:                {student_results['precision']:.4f} / {student_results['recall']:.4f}")
     logger.info(f"   Isolation Forest anomalies:                {iforest_results['anomalies_detected']:,}")
     logger.info(f"   Categorizer accuracy:                      {categorizer_results['accuracy']:.4f}")
     logger.info("=" * 65)
@@ -384,7 +387,7 @@ def train_all():
 
 def ensure_models_exist():
     """Check if distilled models exist, train if they don't."""
-    student_exists = os.path.exists(os.path.join(MODEL_DIR, "student_risk_model.json"))
+    student_exists = os.path.exists(os.path.join(MODEL_DIR, "student_risk_model.pkl"))
     iforest_exists = os.path.exists(os.path.join(MODEL_DIR, "isolation_forest.pkl"))
     categorizer_exists = os.path.exists(os.path.join(MODEL_DIR, "categorizer_model.pkl"))
 

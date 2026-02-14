@@ -18,7 +18,7 @@ services:
       # AI Agent Config
       - RISK_THRESHOLD_AUTO_APPROVE=0.3
       - RISK_THRESHOLD_AUTO_REJECT=0.7
-      - MAX_AUTO_APPROVE_AMOUNT=500.0
+      - MAX_AUTO_APPROVE_AMOUNT=2000.0
       # App Config
       - DATABASE_URL=sqlite:///./tempoexpense.db
       - API_HOST=0.0.0.0
@@ -26,8 +26,6 @@ services:
       - DEBUG=true
     volumes:
       - ./backend:/app
-      - backend-data:/app/ml/models
-      - backend-db:/app/data
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
@@ -56,12 +54,6 @@ services:
     restart: unless-stopped
     networks:
       - tempo-network
-
-volumes:
-  backend-data:
-    driver: local
-  backend-db:
-    driver: local
 
 networks:
   tempo-network:
