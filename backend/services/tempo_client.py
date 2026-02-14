@@ -1,14 +1,11 @@
 """
-Tempo blockchain client using web3.py.
-Connects to Tempo's EVM-compatible Layer 1 for real on-chain stablecoin payments.
+Tempo blockchain client using pytempo + web3.py.
 
-Tempo is a purpose-built L1 blockchain (Chain ID 42431) with:
-- TIP-20 tokens (ERC-20 compatible + transferWithMemo)
-- Instant settlement
-- Programmable memos for on-chain audit trails
-- Fee sponsorship (agent pays all gas — employees never touch crypto)
-- Parallel transactions via 2D nonces
-- Block explorer at explore.tempo.xyz
+Uses pytempo's TempoTransaction (type 0x76) with 2D nonce keys for
+true parallel batch payments. Single payments use nonce key 0 (protocol nonce).
+Falls back to simulation mode when RPC is unreachable.
+
+Docs: https://docs.tempo.xyz/guide/tempo-transaction#concurrent-transactions
 """
 
 import logging
@@ -19,23 +16,29 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from web3 import Web3
 from eth_account import Account
+from pytempo import TempoTransaction, Call
 
 from config import settings
 
 logger = logging.getLogger("TempoExpenseAI.TempoClient")
 
-# TIP-20 Token ABI — subset needed for payments and balance checks
-TIP20_ABI = [
+# Tempo Nonce Precompile — used to query 2D nonce values for keys 1+
+NONCE_PRECOMPILE_ADDRESS = "0x4E4F4E4345000000000000000000000000000000"
+NONCE_PRECOMPILE_ABI = [
     {
-        "name": "transfer",
+        "name": "getNonce",
         "type": "function",
         "inputs": [
-            {"name": "to", "type": "address"},
-            {"name": "amount", "type": "uint256"},
+            {"name": "account", "type": "address"},
+            {"name": "nonceKey", "type": "uint256"},
         ],
-        "outputs": [{"name": "", "type": "bool"}],
-        "stateMutability": "nonpayable",
+        "outputs": [{"name": "nonce", "type": "uint64"}],
+        "stateMutability": "view",
     },
+]
+
+# TIP-20 ABI subset — transferWithMemo for payments, balanceOf for checks
+TIP20_ABI = [
     {
         "name": "transferWithMemo",
         "type": "function",
@@ -54,36 +57,36 @@ TIP20_ABI = [
         "outputs": [{"name": "", "type": "uint256"}],
         "stateMutability": "view",
     },
-    {
-        "name": "decimals",
-        "type": "function",
-        "inputs": [],
-        "outputs": [{"name": "", "type": "uint8"}],
-        "stateMutability": "view",
-    },
-    {
-        "name": "symbol",
-        "type": "function",
-        "inputs": [],
-        "outputs": [{"name": "", "type": "string"}],
-        "stateMutability": "view",
-    },
 ]
+
+
+def _encode_memo(memo: str) -> bytes:
+    """Encode a memo string into bytes32."""
+    truncated = memo[:32] if len(memo) > 32 else memo
+    return truncated.encode("utf-8").ljust(32, b"\x00")[:32]
+
+
+def _ensure_0x(key: str) -> str:
+    """Ensure a hex string has 0x prefix."""
+    return key if key.startswith("0x") else f"0x{key}"
 
 
 class TempoClient:
     """
-    Client for Tempo L1 blockchain interactions.
-    Uses web3.py to connect to Tempo's EVM-compatible RPC endpoint.
+    Client for Tempo L1 blockchain payments.
 
-    In live mode: sends real TIP-20 transferWithMemo() transactions
-    In simulation mode: generates realistic-looking data if RPC is unreachable
+    Uses pytempo TempoTransaction (type 0x76) with 2D nonce keys.
+    Batch payments assign each payment a unique nonce_key (1, 2, 3, ...)
+    so Tempo can validate and execute them in parallel.
     """
+
+    MAX_PARALLEL_KEYS = 10  # Reuse keys 1..10 to avoid state creation costs
 
     def __init__(self):
         self.w3: Optional[Web3] = None
         self.account = None
         self.token_contract = None
+        self.nonce_precompile = None
         self.connected = False
 
         try:
@@ -94,123 +97,96 @@ class TempoClient:
 
             if settings.tempo_private_key:
                 self.account = Account.from_key(settings.tempo_private_key)
-                logger.info(f"🔗 Connected to Tempo RPC: {settings.tempo_rpc_url}")
-                logger.info(f"   Agent wallet: {self.account.address}")
+                logger.info(f"🔗 Tempo RPC: {settings.tempo_rpc_url}")
+                logger.info(f"   Wallet: {self.account.address}")
 
-            # Initialize AlphaUSD TIP-20 token contract
             self.token_contract = self.w3.eth.contract(
                 address=Web3.to_checksum_address(settings.alpha_usd_address),
                 abi=TIP20_ABI,
             )
+            self.nonce_precompile = self.w3.eth.contract(
+                address=Web3.to_checksum_address(NONCE_PRECOMPILE_ADDRESS),
+                abi=NONCE_PRECOMPILE_ABI,
+            )
 
             self.connected = self.w3.is_connected()
             if self.connected:
-                chain_id = self.w3.eth.chain_id
-                logger.info(f"   Chain ID: {chain_id} | Status: ✅ LIVE")
-
-                # Check agent wallet balance
+                logger.info(f"   Chain: {self.w3.eth.chain_id} | ✅ LIVE")
                 if self.account:
                     try:
-                        raw_balance = self.token_contract.functions.balanceOf(
-                            self.account.address
-                        ).call()
-                        balance = raw_balance / 10**6
-                        logger.info(f"   AlphaUSD Balance: ${balance:,.2f}")
+                        raw = self.token_contract.functions.balanceOf(self.account.address).call()
+                        logger.info(f"   AlphaUSD: ${raw / 10**6:,.2f}")
                     except Exception as e:
-                        logger.warning(f"   Could not check balance: {e}")
+                        logger.warning(f"   Balance check failed: {e}")
             else:
-                logger.warning("⚠️ Could not connect to Tempo RPC — simulation mode")
+                logger.warning("⚠️ Tempo RPC unreachable — simulation mode")
 
         except Exception as e:
             logger.warning(f"⚠️ Tempo connection failed: {e} — simulation mode")
             self.connected = False
 
-    def send_payment(
-        self,
-        destination: str,
-        amount: float,
-        memo: str,
-        expense_id: str,
-    ) -> dict:
-        """
-        Send an AlphaUSD payment on Tempo with a programmable memo.
+    # ─── Nonce helpers ───────────────────────────────────────────
 
-        Uses TIP-20 transferWithMemo() to embed AI decision data on-chain.
-        This creates a tamper-proof audit trail — judges can verify any
-        transaction on explore.tempo.xyz and see the AI reasoning in the memo.
-        """
-        if not self.connected or not self.account:
-            logger.warning("⚠️ Tempo not connected — using simulation mode")
-            return self._simulate_payment(destination, amount, memo, expense_id)
-
+    def _get_nonce_for_key(self, nonce_key: int) -> int:
+        """Get current nonce for a 2D nonce key. Key 0 = protocol nonce, 1+ = parallel."""
+        if nonce_key == 0:
+            return self.w3.eth.get_transaction_count(self.account.address)
         try:
-            return self._send_real_payment(destination, amount, memo, expense_id)
-        except Exception as e:
-            logger.error(f"❌ On-chain payment failed: {e}")
-            return self._simulate_payment(destination, amount, memo, expense_id)
+            return self.nonce_precompile.functions.getNonce(self.account.address, nonce_key).call()
+        except Exception:
+            return 0  # New key, nonce starts at 0
 
-    def _send_real_payment(
-        self,
-        destination: str,
-        amount: float,
-        memo: str,
-        expense_id: str,
+    # ─── Core: build, sign, send a TempoTransaction ─────────────
+
+    def _send_tempo_tx(
+        self, destination: str, amount: float, memo: str, expense_id: str,
+        nonce_key: int = 0, nonce: Optional[int] = None,
     ) -> dict:
-        """
-        Execute a real TIP-20 transferWithMemo() on Tempo blockchain.
-
-        The memo (bytes32) is stored immutably on-chain, creating a
-        tamper-proof record of the AI agent's decision.
-        """
-        # Convert USD amount to token units (6 decimals for TIP-20 stablecoins)
-        token_amount = int(amount * 10**6)
-
-        # Encode memo as bytes32 — pack AI decision data into 32 bytes
-        memo_short = memo[:32] if len(memo) > 32 else memo
-        memo_bytes = memo_short.encode("utf-8").ljust(32, b"\x00")[:32]
-
+        """Build, sign, and send a single TempoTransaction (type 0x76)."""
         dest = Web3.to_checksum_address(destination)
-        sender = self.account.address
+        token_amount = int(amount * 10**6)
+        memo_bytes = _encode_memo(memo)
 
-        # Build the transferWithMemo transaction
-        nonce = self.w3.eth.get_transaction_count(sender)
-
-        tx = self.token_contract.functions.transferWithMemo(
+        calldata = self.token_contract.functions.transferWithMemo(
             dest, token_amount, memo_bytes
-        ).build_transaction({
-            "from": sender,
-            "nonce": nonce,
-            "gas": 150_000,
-            "gasPrice": self.w3.eth.gas_price or self.w3.to_wei(1, "gwei"),
-            "chainId": settings.tempo_chain_id,
-        })
+        )._encode_transaction_data()
 
-        # Sign with agent's private key and send
-        signed = self.w3.eth.account.sign_transaction(tx, self.account.key)
-        tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
+        if nonce is None:
+            nonce = self._get_nonce_for_key(nonce_key)
 
-        # Wait for confirmation (Tempo has instant settlement)
+        gas_price = self.w3.eth.gas_price or self.w3.to_wei(1, "gwei")
+
+        tx = TempoTransaction.create(
+            chain_id=settings.tempo_chain_id,
+            gas_limit=150_000,
+            max_fee_per_gas=gas_price * 2,
+            max_priority_fee_per_gas=gas_price,
+            nonce=nonce,
+            nonce_key=nonce_key,
+            fee_token=settings.alpha_usd_address,
+            calls=(Call.create(to=settings.alpha_usd_address, value=0, data=calldata),),
+        )
+
+        signed_tx = tx.sign(_ensure_0x(settings.tempo_private_key))
+        tx_hash = self.w3.eth.send_raw_transaction(signed_tx.encode())
         receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)
 
+        return self._format_receipt(receipt, amount, destination, memo, expense_id, nonce_key, nonce)
+
+    def _format_receipt(
+        self, receipt, amount, destination, memo, expense_id, nonce_key=0, nonce=0,
+    ) -> dict:
+        """Format a transaction receipt into a standard response dict."""
         tx_hash_hex = receipt.transactionHash.hex()
         if not tx_hash_hex.startswith("0x"):
             tx_hash_hex = f"0x{tx_hash_hex}"
 
-        explorer_url = f"{settings.tempo_explorer_url}/tx/{tx_hash_hex}"
-
         success = receipt.status == 1
-
-        # Calculate gas cost for fee sponsorship reporting
-        gas_cost_wei = receipt.gasUsed * (receipt.effectiveGasPrice or 0)
-
-        if success:
-            logger.info(
-                f"💰 PAID on Tempo! ${amount:.2f} → {destination[:10]}... | "
-                f"TX: {tx_hash_hex[:18]}... | Block: {receipt.blockNumber} | "
-                f"Gas sponsored by AgentFin"
-            )
-        else:
-            logger.error(f"❌ TX reverted: {tx_hash_hex}")
+        level = logger.info if success else logger.error
+        level(
+            f"{'💰' if success else '❌'} ${amount:.2f} → {destination[:10]}... | "
+            f"TX: {tx_hash_hex[:18]}... | Block: {receipt.blockNumber}"
+        )
 
         return {
             "success": success,
@@ -218,41 +194,34 @@ class TempoClient:
             "amount": amount,
             "destination": destination,
             "memo": memo,
-            "tempo_tx_url": explorer_url,
+            "expense_id": expense_id,
+            "tempo_tx_url": f"{settings.tempo_explorer_url}/tx/{tx_hash_hex}",
             "network": "tempo_testnet",
             "chain_id": settings.tempo_chain_id,
             "token": "AlphaUSD",
             "token_address": settings.alpha_usd_address,
             "block_number": receipt.blockNumber,
             "gas_used": receipt.gasUsed,
-            "gas_cost_wei": gas_cost_wei,
+            "gas_cost_wei": receipt.gasUsed * (receipt.effectiveGasPrice or 0),
             "timestamp": datetime.utcnow().isoformat(),
             "settlement": "instant",
             "mode": "live",
-            # Fee Sponsorship: the AgentFin wallet pays ALL gas fees
-            # Employees never need to hold tokens for gas — zero-friction UX
+            "nonce_key": nonce_key,
+            "nonce": nonce,
+            "tx_type": "tempo_0x76",
             "fee_sponsored": True,
             "fee_sponsor": self.account.address,
-            "fee_sponsor_label": "AgentFin Agent Wallet",
         }
 
-    def _simulate_payment(
-        self,
-        destination: str,
-        amount: float,
-        memo: str,
-        expense_id: str,
-    ) -> dict:
-        """Simulate a Tempo payment when RPC is unreachable."""
-        hash_input = f"{expense_id}{destination}{amount}{datetime.utcnow().isoformat()}"
-        tx_hash = "0x" + hashlib.sha256(hash_input.encode()).hexdigest()
+    # ─── Simulation fallback ─────────────────────────────────────
 
-        explorer_url = f"{settings.tempo_explorer_url}/tx/{tx_hash}"
+    def _simulate_payment(self, destination, amount, memo, expense_id) -> dict:
+        """Simulate a payment when RPC is unreachable."""
+        tx_hash = "0x" + hashlib.sha256(
+            f"{expense_id}{destination}{amount}{datetime.utcnow().isoformat()}".encode()
+        ).hexdigest()
 
-        logger.info(
-            f"💰 [SIM] Payment: ${amount:.2f} → {destination[:10]}... | "
-            f"TX: {tx_hash[:18]}..."
-        )
+        logger.info(f"💰 [SIM] ${amount:.2f} → {destination[:10]}... | {tx_hash[:18]}...")
 
         return {
             "success": True,
@@ -260,7 +229,8 @@ class TempoClient:
             "amount": amount,
             "destination": destination,
             "memo": memo,
-            "tempo_tx_url": explorer_url,
+            "expense_id": expense_id,
+            "tempo_tx_url": f"{settings.tempo_explorer_url}/tx/{tx_hash}",
             "network": "tempo_testnet_simulation",
             "chain_id": settings.tempo_chain_id,
             "token": "AlphaUSD",
@@ -269,195 +239,119 @@ class TempoClient:
             "mode": "simulation",
         }
 
-    def get_balance(self, address: str) -> dict:
-        """Get AlphaUSD balance for an address on Tempo."""
-        if not self.connected or not self.token_contract:
-            return {
-                "address": address,
-                "balance": "1000000.00",
-                "token": "AlphaUSD",
-                "mode": "simulation",
-            }
+    # ─── Public API ──────────────────────────────────────────────
 
+    def send_payment(self, destination: str, amount: float, memo: str, expense_id: str) -> dict:
+        """Send a single AlphaUSD payment via Tempo (protocol nonce key 0)."""
+        if not self.connected or not self.account:
+            return self._simulate_payment(destination, amount, memo, expense_id)
         try:
-            addr = Web3.to_checksum_address(address)
-            raw = self.token_contract.functions.balanceOf(addr).call()
-            balance = raw / 10**6
-            return {
-                "address": address,
-                "balance": f"{balance:.2f}",
-                "token": "AlphaUSD",
-                "network": "tempo_testnet",
-                "mode": "live",
-            }
+            return self._send_tempo_tx(destination, amount, memo, expense_id)
         except Exception as e:
-            logger.warning(f"Balance check failed: {e}")
-            return {
-                "address": address,
-                "balance": "0.00",
-                "token": "AlphaUSD",
-                "error": str(e),
-            }
+            logger.error(f"❌ Payment failed: {e}")
+            return self._simulate_payment(destination, amount, memo, expense_id)
 
-    def send_batch_payments(
-        self,
-        payments: List[dict],
-    ) -> dict:
+    def get_balance(self, address: str) -> dict:
+        """Get AlphaUSD balance for an address."""
+        if not self.connected:
+            return {"address": address, "balance": "1000000.00", "token": "AlphaUSD", "mode": "simulation"}
+        try:
+            raw = self.token_contract.functions.balanceOf(Web3.to_checksum_address(address)).call()
+            return {"address": address, "balance": f"{raw / 10**6:.2f}", "token": "AlphaUSD", "mode": "live"}
+        except Exception as e:
+            return {"address": address, "balance": "0.00", "token": "AlphaUSD", "error": str(e)}
+
+    def send_batch_payments(self, payments: List[dict]) -> dict:
         """
-        Send multiple payments in parallel using Tempo's 2D nonce capability.
+        Send multiple payments in parallel using Tempo's 2D nonce system.
 
-        Tempo supports concurrent transactions with different nonce keys,
-        allowing us to process multiple expenses simultaneously.
-
-        Each payment dict should have: destination, amount, memo, expense_id
+        Each payment gets a unique nonce_key (1..N) so Tempo validates and
+        executes them concurrently — no sequential nonce dependency.
         """
         if not self.connected or not self.account:
-            logger.warning("⚠️ Tempo not connected — batch simulation mode")
-            results = []
-            for p in payments:
-                results.append(self._simulate_payment(
-                    p["destination"], p["amount"], p["memo"], p["expense_id"]
-                ))
+            results = [self._simulate_payment(p["destination"], p["amount"], p["memo"], p["expense_id"]) for p in payments]
             return {
-                "success": True,
-                "total_payments": len(results),
+                "success": True, "total_payments": len(results),
                 "total_amount": sum(p["amount"] for p in payments),
-                "results": results,
-                "parallel": True,
-                "fee_sponsored": True,
-                "mode": "simulation",
+                "results": results, "parallel": True,
+                "nonce_strategy": "2d_nonce_simulated", "mode": "simulation",
             }
 
-        logger.info(
-            f"⚡ Batch payment: {len(payments)} transactions in parallel | "
-            f"Total: ${sum(p['amount'] for p in payments):,.2f}"
-        )
+        total_amount = sum(p["amount"] for p in payments)
+        logger.info(f"⚡ Batch: {len(payments)} payments via 2D nonces | ${total_amount:,.2f}")
 
-        results = []
-        errors = []
+        # Assign nonce keys (cycle 1..MAX_PARALLEL_KEYS)
+        assignments = [(p, (i % self.MAX_PARALLEL_KEYS) + 1) for i, p in enumerate(payments)]
 
-        # Use ThreadPoolExecutor for parallel transaction submission
-        with ThreadPoolExecutor(max_workers=min(len(payments), 5)) as executor:
-            # Pre-fetch nonce and increment for each tx
-            base_nonce = self.w3.eth.get_transaction_count(self.account.address)
+        # Pre-fetch nonces for all keys in parallel
+        unique_keys = list({nk for _, nk in assignments})
+        nonce_map = {}
+        with ThreadPoolExecutor(max_workers=min(len(unique_keys), 10)) as pool:
+            futures = {pool.submit(self._get_nonce_for_key, k): k for k in unique_keys}
+            for f in as_completed(futures):
+                nonce_map[futures[f]] = f.result() if not f.exception() else 0
 
+        # Track per-key nonce increments
+        nonce_counters = dict(nonce_map)
+
+        # Send all transactions concurrently
+        results, errors = [], []
+        with ThreadPoolExecutor(max_workers=min(len(payments), self.MAX_PARALLEL_KEYS)) as pool:
             future_map = {}
-            for i, payment in enumerate(payments):
-                future = executor.submit(
-                    self._send_single_batch_tx,
+            for payment, nonce_key in assignments:
+                nonce = nonce_counters[nonce_key]
+                nonce_counters[nonce_key] += 1
+                future = pool.submit(
+                    self._send_tempo_tx,
                     destination=payment["destination"],
                     amount=payment["amount"],
                     memo=payment["memo"],
                     expense_id=payment["expense_id"],
-                    nonce=base_nonce + i,
+                    nonce_key=nonce_key,
+                    nonce=nonce,
                 )
                 future_map[future] = payment
 
             for future in as_completed(future_map):
-                payment = future_map[future]
                 try:
-                    result = future.result()
-                    results.append(result)
+                    results.append(future.result())
                 except Exception as e:
-                    logger.error(f"❌ Batch TX failed for {payment['expense_id']}: {e}")
-                    errors.append({
-                        "expense_id": payment["expense_id"],
-                        "error": str(e),
-                    })
+                    pid = future_map[future]["expense_id"]
+                    logger.error(f"❌ Batch TX failed for {pid}: {e}")
+                    errors.append({"expense_id": pid, "error": str(e)})
 
         success_count = sum(1 for r in results if r.get("success"))
-        logger.info(
-            f"⚡ Batch complete: {success_count}/{len(payments)} successful"
-        )
+        logger.info(f"⚡ Batch done: {success_count}/{len(payments)} successful")
 
         return {
             "success": success_count > 0,
             "total_payments": len(payments),
             "successful": success_count,
             "failed": len(errors),
-            "total_amount": sum(p["amount"] for p in payments),
+            "total_amount": total_amount,
             "results": results,
             "errors": errors,
             "parallel": True,
+            "nonce_strategy": "tempo_2d_nonce",
             "fee_sponsored": True,
             "fee_sponsor": self.account.address,
-            "mode": "live",
-        }
-
-    def _send_single_batch_tx(
-        self,
-        destination: str,
-        amount: float,
-        memo: str,
-        expense_id: str,
-        nonce: int,
-    ) -> dict:
-        """Send a single transaction as part of a batch (with pre-assigned nonce)."""
-        token_amount = int(amount * 10**6)
-        memo_short = memo[:32] if len(memo) > 32 else memo
-        memo_bytes = memo_short.encode("utf-8").ljust(32, b"\x00")[:32]
-
-        dest = Web3.to_checksum_address(destination)
-        sender = self.account.address
-
-        tx = self.token_contract.functions.transferWithMemo(
-            dest, token_amount, memo_bytes
-        ).build_transaction({
-            "from": sender,
-            "nonce": nonce,
-            "gas": 150_000,
-            "gasPrice": self.w3.eth.gas_price or self.w3.to_wei(1, "gwei"),
-            "chainId": settings.tempo_chain_id,
-        })
-
-        signed = self.w3.eth.account.sign_transaction(tx, self.account.key)
-        tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
-        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)
-
-        tx_hash_hex = receipt.transactionHash.hex()
-        if not tx_hash_hex.startswith("0x"):
-            tx_hash_hex = f"0x{tx_hash_hex}"
-
-        return {
-            "success": receipt.status == 1,
-            "tx_hash": tx_hash_hex,
-            "amount": amount,
-            "destination": destination,
-            "expense_id": expense_id,
-            "tempo_tx_url": f"{settings.tempo_explorer_url}/tx/{tx_hash_hex}",
-            "block_number": receipt.blockNumber,
-            "gas_used": receipt.gasUsed,
-            "fee_sponsored": True,
             "mode": "live",
         }
 
     def verify_transaction(self, tx_hash: str) -> dict:
         """Verify a transaction on Tempo blockchain."""
         if not self.connected:
-            return {
-                "verified": True,
-                "tx_hash": tx_hash,
-                "mode": "simulation",
-                "explorer_url": f"{settings.tempo_explorer_url}/tx/{tx_hash}",
-            }
-
+            return {"verified": True, "tx_hash": tx_hash, "mode": "simulation",
+                    "explorer_url": f"{settings.tempo_explorer_url}/tx/{tx_hash}"}
         try:
             receipt = self.w3.eth.get_transaction_receipt(tx_hash)
             return {
-                "verified": receipt.status == 1,
-                "tx_hash": tx_hash,
-                "block_number": receipt.blockNumber,
-                "gas_used": receipt.gasUsed,
-                "explorer_url": f"{settings.tempo_explorer_url}/tx/{tx_hash}",
-                "mode": "live",
+                "verified": receipt.status == 1, "tx_hash": tx_hash,
+                "block_number": receipt.blockNumber, "gas_used": receipt.gasUsed,
+                "explorer_url": f"{settings.tempo_explorer_url}/tx/{tx_hash}", "mode": "live",
             }
         except Exception as e:
-            logger.warning(f"TX verification failed: {e}")
-            return {
-                "verified": False,
-                "tx_hash": tx_hash,
-                "error": str(e),
-            }
+            return {"verified": False, "tx_hash": tx_hash, "error": str(e)}
 
 
 # Singleton
@@ -465,7 +359,6 @@ _tempo_client = None
 
 
 def get_tempo_client() -> TempoClient:
-    """Get or create the singleton Tempo client."""
     global _tempo_client
     if _tempo_client is None:
         _tempo_client = TempoClient()
