@@ -60,9 +60,21 @@ app = FastAPI(
 )
 
 # CORS for frontend
+allowed_origins = [
+    "https://tempo-hackathon-iojj-j2j4niivn-karthiks-projects-e8a6be20.vercel.app",
+    "https://tempo-hackathon-iojj.vercel.app",  # Vercel production URL
+    "https://tempo-hackathon.vercel.app",
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:3000",
+]
+# Also allow any *.vercel.app preview deploys
+cors_origin_regex = r"https://tempo-hackathon.*\.vercel\.app"
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
+    allow_origin_regex=cors_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

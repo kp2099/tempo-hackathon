@@ -8,13 +8,28 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
 import enum
+import logging
 
 from config import settings
 
+logger = logging.getLogger("TempoExpenseAI.Database")
+
+# Build engine kwargs based on DB type
+is_sqlite = "sqlite" in settings.database_url
+engine_kwargs = {}
+
+if is_sqlite:
+    engine_kwargs["connect_args"] = {"check_same_thread": False}
+else:
+    # PostgreSQL connection pooling for production
+    engine_kwargs["pool_size"] = 10
+    engine_kwargs["max_overflow"] = 20
+    engine_kwargs["pool_pre_ping"] = True  # Verify connections before use
+
 engine = create_engine(
     settings.database_url,
-    connect_args={"check_same_thread": False} if "sqlite" in settings.database_url else {},
     echo=False,
+    **engine_kwargs,
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
