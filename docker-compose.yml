@@ -1,0 +1,68 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: tempo-expense-backend
+    ports:
+      - "8000:8000"
+    environment:
+      # Tempo Blockchain Configuration
+      - TEMPO_RPC_URL=https://rpc.moderato.tempo.xyz
+      - TEMPO_CHAIN_ID=42431
+      - TEMPO_EXPLORER_URL=https://explore.tempo.xyz
+      # Agent Master Wallet (Test Wallet 1 — has 1M AlphaUSD)
+      - TEMPO_PRIVATE_KEY=0x2b9e3b8a095940cf3461e27bfb2bebb498df9a6381b76b9f9c48c9bbdc3c8192
+      # TIP-20 Stablecoin Token Address
+      - ALPHA_USD_ADDRESS=0x20c0000000000000000000000000000000000001
+      # AI Agent Config
+      - RISK_THRESHOLD_AUTO_APPROVE=0.3
+      - RISK_THRESHOLD_AUTO_REJECT=0.7
+      - MAX_AUTO_APPROVE_AMOUNT=500.0
+      # App Config
+      - DATABASE_URL=sqlite:///./tempoexpense.db
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - DEBUG=true
+    volumes:
+      - ./backend:/app
+      - backend-data:/app/ml/models
+      - backend-db:/app
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - tempo-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: tempo-expense-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=http://backend:8000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - tempo-network
+
+volumes:
+  backend-data:
+    driver: local
+  backend-db:
+    driver: local
+
+networks:
+  tempo-network:
+    driver: bridge
