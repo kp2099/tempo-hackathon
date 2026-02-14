@@ -579,6 +579,7 @@ async def batch_approve_pending(db: Session = Depends(get_db)):
         "failed": batch_result.get("failed", 0),
         "total_amount": round(total_amount, 2),
         "parallel_execution": True,
+        "nonce_strategy": batch_result.get("nonce_strategy", "unknown"),
         "fee_sponsored": True,
         "transactions": [
             {
@@ -586,6 +587,8 @@ async def batch_approve_pending(db: Session = Depends(get_db)):
                 "tx_hash": r.get("tx_hash"),
                 "amount": r.get("amount"),
                 "tempo_tx_url": r.get("tempo_tx_url"),
+                "nonce_key": r.get("nonce_key"),
+                "tx_type": r.get("tx_type"),
             }
             for r in batch_result.get("results", []) if r.get("success")
         ],
