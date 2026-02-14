@@ -72,6 +72,9 @@ class PolicyEngine:
                 self._check_duplicates(expense_data, employee_id)
             )
 
+        # 6. OCR receipt verification
+        violations.extend(self._check_ocr_verification(expense_data))
+
         # Determine overall result
         blocking = [v for v in violations if v.severity == "block"]
         warnings = [v for v in violations if v.severity == "warning"]
@@ -241,3 +244,59 @@ class PolicyEngine:
             logger.warning(f"Duplicate check failed: {e}")
 
         return []
+
+    def _check_ocr_verification(self, expense_data: dict) -> List[PolicyViolation]:
+        """Check OCR-extracted receipt data against submitted expense data."""
+        if not expense_data.get("ocr_success"):
+            return []
+
+        violations = []
+        amount = expense_data.get("amount", 0)
+
+        # Amount mismatch — OCR total vs submitted amount
+        amt_mismatch = float(expense_data.get("amount_mismatch", 0))
+        if amt_mismatch > 0.50:
+            ocr_amt = expense_data.get("ocr_amount", "?")
+            violations.append(PolicyViolation(
+                "Receipt Amount Mismatch",
+                f"Receipt shows ${ocr_amt} but ${amount:.2f} was submitted "
+                f"({amt_mismatch:.0%} difference)",
+                severity="flag",
+            ))
+        elif amt_mismatch > 0.15:
+            ocr_amt = expense_data.get("ocr_amount", "?")
+            violations.append(PolicyViolation(
+                "Receipt Amount Discrepancy",
+                f"Receipt shows ${ocr_amt} vs submitted ${amount:.2f} "
+                f"({amt_mismatch:.0%} difference)",
+                severity="warning",
+            ))
+
+        # Merchant mismatch
+        if expense_data.get("merchant_mismatch"):
+            ocr_merch = expense_data.get("ocr_merchant", "unknown")
+            submitted_merch = expense_data.get("merchant", "unknown")
+            violations.append(PolicyViolation(
+                "Receipt Merchant Mismatch",
+                f"Receipt merchant '{ocr_merch}' doesn't match "
+                f"submitted '{submitted_merch}'",
+                severity="warning",
+            ))
+
+        # Old/stale receipt
+        date_gap = int(expense_data.get("date_gap_days", 0))
+        if date_gap > 90:
+            violations.append(PolicyViolation(
+                "Stale Receipt",
+                f"Receipt date is {date_gap} days old — "
+                f"possible reused or old receipt",
+                severity="flag",
+            ))
+        elif date_gap > 30:
+            violations.append(PolicyViolation(
+                "Old Receipt",
+                f"Receipt date is {date_gap} days ago",
+                severity="warning",
+            ))
+
+        return violations

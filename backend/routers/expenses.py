@@ -20,6 +20,7 @@ from services.approval_engine import ApprovalEngine
 from services.tempo_client import get_tempo_client
 from services.nl_parser import parse_natural_language
 from services.risk_explainer import explain_risk
+from services.ocr_service import extract_receipt_data, compute_ocr_features
 
 logger = logging.getLogger("TempoExpenseAI.ExpensesRouter")
 
@@ -36,7 +37,7 @@ class DisputeRequest(BaseModel):
     reason: str
 
 
-def _build_expense_features(expense: ExpenseCreate, db: Session) -> dict:
+def _build_expense_features(expense: ExpenseCreate, db: Session, ocr_features: dict = None) -> dict:
     """Build the full feature dict needed by the ML models."""
     now = datetime.utcnow()
 
@@ -71,7 +72,7 @@ def _build_expense_features(expense: ExpenseCreate, db: Session) -> dict:
     else:
         days_since = 30
 
-    return {
+    features = {
         "amount": expense.amount,
         "category": expense.category,
         "merchant": expense.merchant or "Unknown",
@@ -89,6 +90,12 @@ def _build_expense_features(expense: ExpenseCreate, db: Session) -> dict:
         "is_round_number": 1 if expense.amount % 10 == 0 else 0,
         "description_length": len(expense.description or ""),
     }
+
+    # Merge OCR-derived features if available
+    if ocr_features:
+        features.update(ocr_features)
+
+    return features
 
 
 @router.post("/submit")
@@ -114,8 +121,39 @@ async def submit_expense(expense: ExpenseCreate, db: Session = Depends(get_db)):
     # Generate unique expense ID
     expense_id = f"EXP-{uuid.uuid4().hex[:8].upper()}"
 
-    # Build features for ML models
-    features = _build_expense_features(expense, db)
+    # ─── OCR: Extract data from receipt if uploaded ───
+    ocr_result = {}
+    ocr_features = {}
+    if expense.receipt_file_path:
+        # Resolve the absolute path to the uploaded receipt
+        # receipt_file_path is like "/uploads/receipts/receipt_xxx.png"
+        # UPLOAD_DIR is the absolute path to the uploads/receipts directory
+        receipt_filename = os.path.basename(expense.receipt_file_path)
+        receipt_abs_path = os.path.join(UPLOAD_DIR, receipt_filename)
+
+        logger.info(f"🧾 Looking for receipt at: {receipt_abs_path} (exists: {os.path.exists(receipt_abs_path)})")
+
+        if os.path.exists(receipt_abs_path):
+            try:
+                ocr_result = extract_receipt_data(receipt_abs_path)
+                ocr_features = compute_ocr_features(
+                    ocr_result,
+                    {"amount": expense.amount, "merchant": expense.merchant, "category": expense.category},
+                )
+                logger.info(
+                    f"🔍 OCR features for {expense_id}: "
+                    f"ocr_success={ocr_features.get('ocr_success')}, "
+                    f"ocr_amount={ocr_result.get('ocr_amount')}, "
+                    f"amount_mismatch={ocr_features.get('amount_mismatch', 0):.2%}, "
+                    f"merchant_mismatch={ocr_features.get('merchant_mismatch', False)}"
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ OCR processing failed for {expense_id}: {e}")
+        else:
+            logger.warning(f"⚠️ Receipt file not found at {receipt_abs_path}")
+
+    # Build features for ML models (includes OCR features if available)
+    features = _build_expense_features(expense, db, ocr_features=ocr_features)
 
     # Initialize AI approval engine
     approval_engine = ApprovalEngine(db=db)
@@ -144,6 +182,14 @@ async def submit_expense(expense: ExpenseCreate, db: Session = Depends(get_db)):
         description=expense.description,
         receipt_attached=expense.receipt_attached,
         receipt_file_path=expense.receipt_file_path,
+        # OCR data
+        ocr_amount=ocr_result.get("ocr_amount"),
+        ocr_merchant=ocr_result.get("ocr_merchant"),
+        ocr_date=ocr_result.get("ocr_date"),
+        ocr_confidence=ocr_result.get("ocr_confidence"),
+        ocr_raw_text=ocr_result.get("ocr_raw_text"),
+        ocr_data=json.dumps(ocr_result) if ocr_result else None,
+        # AI scoring
         risk_score=decision.risk_score,
         anomaly_score=decision.anomaly_score,
         ai_category=decision.predicted_category,
@@ -224,6 +270,22 @@ async def submit_expense(expense: ExpenseCreate, db: Session = Depends(get_db)):
         else "high"
     )
     result["layer_scores"] = layer_scores
+
+    # Include OCR verification results if available
+    if ocr_result.get("ocr_success"):
+        result["ocr_verification"] = {
+            "ocr_amount": ocr_result.get("ocr_amount"),
+            "ocr_merchant": ocr_result.get("ocr_merchant"),
+            "ocr_date": ocr_result.get("ocr_date"),
+            "ocr_confidence": ocr_result.get("ocr_confidence"),
+            "ocr_item_count": ocr_result.get("ocr_item_count", 0),
+            "ocr_tax": ocr_result.get("ocr_tax"),
+            "amount_mismatch": ocr_features.get("amount_mismatch", 0),
+            "amount_mismatch_flag": ocr_features.get("amount_mismatch_flag", False),
+            "merchant_mismatch": ocr_features.get("merchant_mismatch", False),
+            "date_gap_days": ocr_features.get("date_gap_days", 0),
+            "date_mismatch_flag": ocr_features.get("date_mismatch_flag", False),
+        }
 
     return result
 
@@ -369,7 +431,8 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 @router.post("/upload-receipt")
 async def upload_receipt(file: UploadFile = File(...)):
     """
-    Upload a receipt image/PDF. Returns the file path to attach to an expense.
+    Upload a receipt image/PDF. Runs OCR to extract structured data.
+    Returns the file path and OCR results to attach to an expense.
     Supports JPEG, PNG, PDF files up to 10MB.
     """
     # Validate file type
@@ -395,11 +458,26 @@ async def upload_receipt(file: UploadFile = File(...)):
 
     logger.info(f"📎 Receipt uploaded: {filename} ({len(contents)} bytes)")
 
+    # Run OCR on the uploaded image
+    ocr_result = {}
+    if file.content_type and file.content_type.startswith("image/"):
+        try:
+            ocr_result = extract_receipt_data(filepath)
+            logger.info(
+                f"🔍 OCR complete: amount=${ocr_result.get('ocr_amount')}, "
+                f"merchant={ocr_result.get('ocr_merchant')}, "
+                f"confidence={ocr_result.get('ocr_confidence', 0):.1%}"
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ OCR failed for {filename}: {e}")
+            ocr_result = {"ocr_success": False, "ocr_error": str(e)}
+
     return {
         "filename": filename,
         "filepath": f"/uploads/receipts/{filename}",
         "size_bytes": len(contents),
         "content_type": file.content_type,
+        "ocr": ocr_result,
     }
 
 

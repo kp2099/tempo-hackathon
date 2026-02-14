@@ -29,6 +29,12 @@ class ExpenseResponse(BaseModel):
     receipt_attached: bool
     receipt_file_path: Optional[str] = None
 
+    # OCR Data
+    ocr_amount: Optional[float] = None
+    ocr_merchant: Optional[str] = None
+    ocr_date: Optional[str] = None
+    ocr_confidence: Optional[float] = None
+
     # AI Scoring
     risk_score: Optional[float] = None
     anomaly_score: Optional[float] = None

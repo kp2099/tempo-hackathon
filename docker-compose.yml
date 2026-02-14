@@ -27,7 +27,7 @@ services:
     volumes:
       - ./backend:/app
       - backend-data:/app/ml/models
-      - backend-db:/app
+      - backend-db:/app/data
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s

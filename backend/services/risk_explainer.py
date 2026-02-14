@@ -117,6 +117,33 @@ def explain_risk(
     if hour < 6 or hour > 22:
         details.append(f"Submitted at an unusual hour ({hour}:00)")
 
+    # OCR receipt verification
+    if expense_data.get("ocr_success"):
+        ocr_confidence = expense_data.get("ocr_confidence", 0)
+        amt_mismatch = expense_data.get("amount_mismatch", 0)
+
+        if amt_mismatch > 0.15:
+            ocr_amt = expense_data.get("ocr_amount", "?")
+            details.append(
+                f"🧾 Receipt OCR detected amount ${ocr_amt} vs submitted "
+                f"${amount:,.2f} ({amt_mismatch:.0%} mismatch)"
+            )
+        elif amt_mismatch == 0 and expense_data.get("ocr_amount") is not None:
+            details.append("🧾 Receipt amount matches submitted amount ✓")
+
+        if expense_data.get("merchant_mismatch"):
+            ocr_merch = expense_data.get("ocr_merchant", "unknown")
+            details.append(
+                f"🧾 Receipt merchant '{ocr_merch}' differs from submitted merchant"
+            )
+
+        date_gap = expense_data.get("date_gap_days", 0)
+        if date_gap > 30:
+            details.append(f"🧾 Receipt date is {date_gap} days old")
+
+        if ocr_confidence > 0:
+            details.append(f"🧾 Receipt OCR confidence: {ocr_confidence:.0%}")
+
     # Policy violations
     violations = policy_result.get("violations", [])
     for v in violations:
