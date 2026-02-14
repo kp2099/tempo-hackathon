@@ -14,7 +14,7 @@ const statusConfig = {
   disputed: { icon: MessageSquare, color: 'text-orange-400', bg: 'bg-orange-500/10', label: 'Disputed' },
 };
 
-export default function ExpenseList({ filterStatus, showActions }) {
+export default function ExpenseList({ filterStatus, showActions, employeeId, limit }) {
   const [expenses, setExpenses] = useState([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -25,13 +25,15 @@ export default function ExpenseList({ filterStatus, showActions }) {
 
   useEffect(() => {
     loadExpenses();
-  }, [filterStatus]);
+  }, [filterStatus, employeeId]);
 
   const loadExpenses = async () => {
     setLoading(true);
     try {
       const params = {};
       if (filterStatus) params.status = filterStatus;
+      if (employeeId) params.employee_id = employeeId;
+      if (limit) params.limit = limit;
       const res = await getExpenses(params);
       setExpenses(res.data.expenses);
       setTotal(res.data.total);
@@ -150,7 +152,18 @@ export default function ExpenseList({ filterStatus, showActions }) {
                       {expense.category} {expense.merchant && `· ${expense.merchant}`}
                     </span>
                   </p>
-                  <p className="text-slate-500 text-xs mt-1">{expense.employee_id} · {new Date(expense.submitted_at).toLocaleString()}</p>
+                  <p className="text-slate-500 text-xs mt-1">
+                    {expense.employee_id} · {new Date(expense.submitted_at).toLocaleString()}
+                    {expense.approved_by && (
+                      <span className={`ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                        expense.approved_by === 'AgentFin'
+                          ? 'bg-purple-500/15 text-purple-400'
+                          : 'bg-blue-500/15 text-blue-400'
+                      }`}>
+                        {expense.approved_by === 'AgentFin' ? '🤖' : '👤'} {expense.approved_by}
+                      </span>
+                    )}
+                  </p>
                 </div>
 
                 {/* Actions */}

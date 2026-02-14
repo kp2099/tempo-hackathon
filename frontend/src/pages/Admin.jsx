@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Shield, Users, Wallet, Zap, CheckCircle, ExternalLink, Loader2 } from 'lucide-react';
+import { Shield, Users, Wallet, Zap, CheckCircle, ExternalLink, Loader2, History } from 'lucide-react';
 import { getEmployees, getSpendingSummary, batchApprove } from '../api/client';
 import ExpenseList from '../components/ExpenseList';
 
@@ -249,6 +249,22 @@ export default function Admin() {
 
             <ExpenseList filterStatus="manager_review" showActions={true} />
           </div>
+
+          {/* Past Activity for selected employee */}
+          {selectedEmployee && (
+            <div className="bg-slate-800 rounded-xl border border-slate-700 p-5">
+              <h3 className="text-lg font-semibold text-white flex items-center gap-2 mb-4">
+                <History className="w-5 h-5 text-blue-400" />
+                Past Activity — {selectedEmployee.name}
+              </h3>
+              <p className="text-slate-400 text-xs mb-4">Last 10 expenses submitted by this employee</p>
+              <ExpenseList
+                employeeId={selectedEmployee.employee_id}
+                limit={10}
+                showActions={false}
+              />
+            </div>
+          )}
         </div>
       </div>
     </div>
