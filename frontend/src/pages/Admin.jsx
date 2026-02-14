@@ -247,7 +247,7 @@ export default function Admin() {
               </div>
             )}
 
-            <ExpenseList filterStatus="manager_review" showActions={true} />
+            <ExpenseList filterStatus="manager_review,disputed" showActions={true} />
           </div>
 
           {/* Past Activity for selected employee */}

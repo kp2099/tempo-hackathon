@@ -15,6 +15,7 @@ export const getExpense = (id) => api.get(`/expenses/${id}`);
 export const approveExpense = (id) => api.post(`/expenses/${id}/approve`);
 export const rejectExpense = (id) => api.post(`/expenses/${id}/reject`);
 export const disputeExpense = (id, reason) => api.post(`/expenses/${id}/dispute`, { reason });
+export const overrideExpense = (id, reason) => api.post(`/expenses/${id}/override`, { reason: reason || null });
 export const parseExpenseText = (text) => api.post('/expenses/parse', { text });
 export const batchApprove = () => api.post('/expenses/batch-approve');
 export const uploadReceipt = (file) => {
