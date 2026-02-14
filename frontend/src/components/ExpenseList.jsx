@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { RefreshCw, ExternalLink, CheckCircle, Clock, XCircle, AlertTriangle, Zap, Shield } from 'lucide-react';
-import { getExpenses, approveExpense, rejectExpense } from '../api/client';
+import { RefreshCw, ExternalLink, CheckCircle, Clock, XCircle, AlertTriangle, Zap, Shield, MessageSquare } from 'lucide-react';
+import { getExpenses, approveExpense, rejectExpense, disputeExpense } from '../api/client';
 import RiskGauge from './RiskGauge';
 
 const statusConfig = {
@@ -11,6 +11,7 @@ const statusConfig = {
   pending: { icon: Clock, color: 'text-slate-400', bg: 'bg-slate-500/10', label: 'Pending' },
   rejected: { icon: XCircle, color: 'text-red-400', bg: 'bg-red-500/10', label: 'Rejected' },
   flagged: { icon: AlertTriangle, color: 'text-red-400', bg: 'bg-red-500/10', label: 'Flagged' },
+  disputed: { icon: MessageSquare, color: 'text-orange-400', bg: 'bg-orange-500/10', label: 'Disputed' },
 };
 
 export default function ExpenseList({ filterStatus, showActions }) {
@@ -19,6 +20,8 @@ export default function ExpenseList({ filterStatus, showActions }) {
   const [loading, setLoading] = useState(true);
   const [selectedExpense, setSelectedExpense] = useState(null);
   const [actionLoading, setActionLoading] = useState(null);
+  const [disputeText, setDisputeText] = useState('');
+  const [showDisputeForm, setShowDisputeForm] = useState(null);
 
   useEffect(() => {
     loadExpenses();
@@ -58,6 +61,24 @@ export default function ExpenseList({ filterStatus, showActions }) {
       loadExpenses();
     } catch (err) {
       alert(err.response?.data?.detail || 'Rejection failed');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleDispute = async (expenseId) => {
+    if (!disputeText.trim()) {
+      alert('Please provide a reason for your dispute.');
+      return;
+    }
+    setActionLoading(expenseId);
+    try {
+      await disputeExpense(expenseId, disputeText);
+      setShowDisputeForm(null);
+      setDisputeText('');
+      loadExpenses();
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Dispute failed');
     } finally {
       setActionLoading(null);
     }
@@ -133,7 +154,7 @@ export default function ExpenseList({ filterStatus, showActions }) {
                 </div>
 
                 {/* Actions */}
-                {showActions && expense.status === 'manager_review' && (
+                {showActions && (expense.status === 'manager_review' || expense.status === 'disputed') && (
                   <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
                     <button
                       onClick={() => handleApprove(expense.expense_id)}
@@ -226,6 +247,54 @@ export default function ExpenseList({ filterStatus, showActions }) {
                       <p className="text-xs text-green-300/80">
                         Transaction fees sponsored by AgentFin — employee paid $0 in gas fees
                       </p>
+                    </div>
+                  )}
+
+                  {/* Raise Exception / Dispute Button */}
+                  {(expense.status === 'rejected' || expense.status === 'flagged') && (
+                    <div className="mt-2" onClick={(e) => e.stopPropagation()}>
+                      {showDisputeForm === expense.expense_id ? (
+                        <div className="bg-orange-900/15 border border-orange-800/30 rounded-lg p-3 space-y-2 animate-fadeIn">
+                          <p className="text-xs text-orange-400 font-medium flex items-center gap-1">
+                            <MessageSquare className="w-3 h-3" /> Raise Exception
+                          </p>
+                          <textarea
+                            value={disputeText}
+                            onChange={(e) => setDisputeText(e.target.value)}
+                            placeholder="Explain why this expense should be reconsidered..."
+                            className="w-full bg-slate-800 border border-orange-700/30 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:ring-1 focus:ring-orange-500 resize-none"
+                            rows={2}
+                          />
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => handleDispute(expense.expense_id)}
+                              disabled={actionLoading === expense.expense_id || !disputeText.trim()}
+                              className="px-3 py-1.5 bg-orange-600 hover:bg-orange-500 text-white text-xs rounded-lg font-medium transition-colors disabled:opacity-50 flex items-center gap-1"
+                            >
+                              {actionLoading === expense.expense_id ? (
+                                <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                              ) : (
+                                <MessageSquare className="w-3 h-3" />
+                              )}
+                              Submit Exception
+                            </button>
+                            <button
+                              onClick={() => { setShowDisputeForm(null); setDisputeText(''); }}
+                              className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs rounded-lg font-medium transition-colors"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setShowDisputeForm(expense.expense_id)}
+                          className="flex items-center gap-2 px-3 py-2 bg-orange-900/20 hover:bg-orange-900/30 border border-orange-800/30 hover:border-orange-700/50 rounded-lg text-orange-400 text-xs font-medium transition-all w-full justify-center"
+                        >
+                          <MessageSquare className="w-3.5 h-3.5" />
+                          Raise Exception — Contest This Decision
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>

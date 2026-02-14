@@ -12,11 +12,14 @@ venv/
 env/
 .venv/
 
-# ML Models
+# ML Models (trained at startup — not committed)
 backend/ml/models/*.json
 backend/ml/models/*.pkl
 backend/ml/models/*.joblib
 !backend/ml/models/.gitkeep
+
+# Kaggle dataset cache (150MB — downloaded at startup)
+backend/ml/data/creditcard.csv
 
 # Environment
 .env

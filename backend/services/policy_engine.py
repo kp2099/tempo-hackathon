@@ -1,6 +1,10 @@
 """
 Policy Engine - Enforces organizational expense rules.
-Rules can be loaded from DB or configured via code.
+
+Severity levels:
+  - "warning" : logged, does NOT block approval
+  - "flag"    : sends to manager review, does NOT hard-reject
+  - "block"   : hard-rejects the expense
 """
 
 import logging
@@ -13,38 +17,12 @@ from datetime import datetime, timedelta
 logger = logging.getLogger("TempoExpenseAI.PolicyEngine")
 
 
-# Default policies (used if no DB policies configured)
-DEFAULT_POLICIES = [
-    {
-        "name": "Receipt required above $25",
-        "check": "receipt_required",
-        "requires_receipt_above": 25.0,
-    },
-    {
-        "name": "Single expense limit $5000",
-        "check": "max_single_expense",
-        "max_amount": 5000.0,
-    },
-    {
-        "name": "Meals limit $100 per expense",
-        "check": "category_limit",
-        "category": "meals",
-        "max_amount": 100.0,
-    },
-    {
-        "name": "Monthly employee limit $5000",
-        "check": "monthly_limit",
-        "max_amount": 5000.0,
-    },
-]
-
-
 class PolicyViolation:
     """Represents a single policy violation."""
     def __init__(self, policy_name: str, message: str, severity: str = "warning"):
         self.policy_name = policy_name
         self.message = message
-        self.severity = severity  # "warning", "block", "flag"
+        self.severity = severity  # "warning", "flag", "block"
 
     def to_dict(self):
         return {
@@ -117,29 +95,49 @@ class PolicyEngine:
         """Check if receipt is required but missing."""
         amount = expense_data.get("amount", 0)
         receipt = expense_data.get("receipt_attached", False)
-        threshold = 25.0
 
-        if amount > threshold and not receipt:
-            severity = "block" if amount > 100 else "warning"
-            return [PolicyViolation(
-                "Receipt Required",
-                f"Receipt required for expenses above ${threshold:.2f} "
-                f"(expense: ${amount:.2f})",
-                severity=severity,
-            )]
+        if amount > 25 and not receipt:
+            # Only hard-block for very large amounts with no receipt
+            if amount > 1000:
+                return [PolicyViolation(
+                    "Receipt Required",
+                    f"Receipt required for expenses above $1,000 "
+                    f"(expense: ${amount:.2f})",
+                    severity="block",
+                )]
+            elif amount > 200:
+                # Flag for manager review but don't hard-reject
+                return [PolicyViolation(
+                    "Receipt Recommended",
+                    f"No receipt attached for ${amount:.2f} expense. "
+                    f"Recommended for amounts above $200.",
+                    severity="flag",
+                )]
+            else:
+                # Just a warning for smaller amounts
+                return [PolicyViolation(
+                    "Receipt Suggested",
+                    f"Consider attaching receipt for ${amount:.2f} expense.",
+                    severity="warning",
+                )]
         return []
 
     def _check_max_amount(self, expense_data: dict) -> List[PolicyViolation]:
         """Check single expense maximum."""
         amount = expense_data.get("amount", 0)
-        max_amount = 5000.0
 
-        if amount > max_amount:
+        if amount > 25000:
             return [PolicyViolation(
                 "Maximum Expense Limit",
                 f"Expense ${amount:.2f} exceeds maximum single expense "
-                f"limit of ${max_amount:.2f}",
+                f"limit of $25,000",
                 severity="block",
+            )]
+        elif amount > 10000:
+            return [PolicyViolation(
+                "High Value Expense",
+                f"Expense ${amount:.2f} exceeds $10,000 — requires manager approval",
+                severity="flag",
             )]
         return []
 
@@ -148,20 +146,30 @@ class PolicyEngine:
         category = expense_data.get("category", "")
         amount = expense_data.get("amount", 0)
 
+        # Much more reasonable limits
         category_limits = {
-            "meals": 100.0,
-            "transportation": 150.0,
-            "office_supplies": 500.0,
-            "client_entertainment": 300.0,
+            "meals": {"warn": 200, "block": 500},
+            "transportation": {"warn": 300, "block": 800},
+            "office_supplies": {"warn": 1000, "block": 3000},
+            "client_entertainment": {"warn": 600, "block": 2000},
         }
 
-        limit = category_limits.get(category)
-        if limit and amount > limit:
-            return [PolicyViolation(
-                f"{category.title()} Category Limit",
-                f"${amount:.2f} exceeds {category} limit of ${limit:.2f}",
-                severity="warning" if amount < limit * 1.5 else "block",
-            )]
+        limits = category_limits.get(category)
+        if limits:
+            if amount > limits["block"]:
+                return [PolicyViolation(
+                    f"{category.replace('_', ' ').title()} Limit",
+                    f"${amount:.2f} exceeds {category.replace('_', ' ')} "
+                    f"limit of ${limits['block']:.0f}",
+                    severity="flag",  # Flag, don't hard-block
+                )]
+            elif amount > limits["warn"]:
+                return [PolicyViolation(
+                    f"{category.replace('_', ' ').title()} Advisory",
+                    f"${amount:.2f} is above typical {category.replace('_', ' ')} "
+                    f"range (${limits['warn']:.0f})",
+                    severity="warning",
+                )]
         return []
 
     def _check_monthly_limit(
@@ -177,24 +185,25 @@ class PolicyEngine:
                 EmployeeDB.employee_id == employee_id
             ).first()
 
-            monthly_limit = employee.monthly_limit if employee else 5000.0
+            monthly_limit = employee.monthly_limit if employee else 10000.0
 
-            # Calculate current month's total
+            # Only count APPROVED/PAID expenses toward monthly total
             month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0)
             monthly_total = self.db.query(func.sum(ExpenseDB.amount)).filter(
                 ExpenseDB.employee_id == employee_id,
                 ExpenseDB.submitted_at >= month_start,
-                ExpenseDB.status.notin_(["rejected", "flagged"]),
+                ExpenseDB.status.in_(["auto_approved", "approved", "paid"]),
             ).scalar() or 0.0
 
             new_total = monthly_total + expense_data.get("amount", 0)
 
             if new_total > monthly_limit:
+                severity = "block" if new_total > monthly_limit * 1.5 else "flag"
                 return [PolicyViolation(
                     "Monthly Spending Limit",
                     f"Monthly total ${new_total:.2f} would exceed limit of "
                     f"${monthly_limit:.2f} (already spent: ${monthly_total:.2f})",
-                    severity="block",
+                    severity=severity,
                 )]
         except Exception as e:
             logger.warning(f"Monthly limit check failed: {e}")
@@ -209,24 +218,26 @@ class PolicyEngine:
             return []
 
         try:
-            # Look for same amount, category within last 24h
+            # Look for same amount, category, merchant within last 24h
             yesterday = datetime.utcnow() - timedelta(hours=24)
             duplicates = self.db.query(ExpenseDB).filter(
                 ExpenseDB.employee_id == employee_id,
                 ExpenseDB.amount == expense_data.get("amount"),
                 ExpenseDB.category == expense_data.get("category"),
+                ExpenseDB.merchant == expense_data.get("merchant"),
                 ExpenseDB.submitted_at >= yesterday,
+                # Only check against expenses that weren't already rejected
+                ExpenseDB.status.notin_(["rejected", "flagged"]),
             ).count()
 
             if duplicates > 0:
                 return [PolicyViolation(
                     "Potential Duplicate",
                     f"Found {duplicates} similar expense(s) in last 24 hours "
-                    f"(same amount and category)",
-                    severity="flag",
+                    f"(same amount, category, and merchant)",
+                    severity="warning",  # Just a warning, not a block
                 )]
         except Exception as e:
             logger.warning(f"Duplicate check failed: {e}")
 
         return []
-

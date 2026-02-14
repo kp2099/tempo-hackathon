@@ -22,7 +22,7 @@ DEMO_EMPLOYEES = [
         "email": "sarah.chen@company.com",
         "department": "sales",
         "role": "employee",
-        "monthly_limit": 5000.0,
+        "monthly_limit": 10000.0,
         # Wallet 2 — real funded Tempo testnet wallet
         "tempo_wallet": "0xAcF8dBD0352a9D47135DA146EA5DbEfAD58340C4",
     },
@@ -32,7 +32,7 @@ DEMO_EMPLOYEES = [
         "email": "dave.rodriguez@company.com",
         "department": "engineering",
         "role": "employee",
-        "monthly_limit": 3000.0,
+        "monthly_limit": 8000.0,
         # Wallet 3 — real funded Tempo testnet wallet
         "tempo_wallet": "0x41A75fc9817AF9F2DB0c0e58C71Bc826339b3Acb",
     },
@@ -42,7 +42,7 @@ DEMO_EMPLOYEES = [
         "email": "emily.watson@company.com",
         "department": "marketing",
         "role": "employee",
-        "monthly_limit": 4000.0,
+        "monthly_limit": 8000.0,
         # Wallet 4 — real funded Tempo testnet wallet
         "tempo_wallet": "0x88FB1167B01EcE2CAEe65c4E193Ba942D6F73d70",
     },
@@ -52,7 +52,7 @@ DEMO_EMPLOYEES = [
         "email": "james.park@company.com",
         "department": "engineering",
         "role": "manager",
-        "monthly_limit": 8000.0,
+        "monthly_limit": 15000.0,
         # Wallet 5 — real funded Tempo testnet wallet
         "tempo_wallet": "0xe945797ebC84F1953Ff8131bC29277e567b881D4",
     },
@@ -62,7 +62,7 @@ DEMO_EMPLOYEES = [
         "email": "lisa.thompson@company.com",
         "department": "finance",
         "role": "finance",
-        "monthly_limit": 10000.0,
+        "monthly_limit": 20000.0,
         # Uses a derived address (not one of the 5 test wallets)
         "tempo_wallet": "0x031891A61200FedDd622EbACC10734BC90093B2A",
     },
@@ -70,25 +70,25 @@ DEMO_EMPLOYEES = [
 
 DEMO_POLICIES = [
     {
-        "name": "Receipt required above $25",
+        "name": "Receipt required above $200",
         "category": None,
         "max_amount": None,
-        "requires_receipt_above": 25.0,
+        "requires_receipt_above": 200.0,
         "monthly_limit": None,
         "department": None,
     },
     {
         "name": "Meals limit per expense",
         "category": "meals",
-        "max_amount": 100.0,
-        "requires_receipt_above": 25.0,
+        "max_amount": 500.0,
+        "requires_receipt_above": 50.0,
         "monthly_limit": None,
         "department": None,
     },
     {
         "name": "Travel single expense limit",
         "category": "travel",
-        "max_amount": 2000.0,
+        "max_amount": 5000.0,
         "requires_receipt_above": 0.0,
         "monthly_limit": None,
         "department": None,
@@ -97,14 +97,14 @@ DEMO_POLICIES = [
         "name": "Monthly employee limit",
         "category": None,
         "max_amount": None,
-        "requires_receipt_above": 25.0,
-        "monthly_limit": 5000.0,
+        "requires_receipt_above": 200.0,
+        "monthly_limit": 10000.0,
         "department": None,
     },
     {
         "name": "Equipment requires approval",
         "category": "equipment",
-        "max_amount": 500.0,
+        "max_amount": 3000.0,
         "requires_receipt_above": 0.0,
         "monthly_limit": None,
         "department": None,

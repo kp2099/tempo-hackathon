@@ -8,7 +8,9 @@ with programmable memos for on-chain audit trails.
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
+import os
 import logging
 
 from config import settings
@@ -69,6 +71,11 @@ app.add_middleware(
 app.include_router(expenses.router, prefix="/api/expenses", tags=["Expenses"])
 app.include_router(employees.router, prefix="/api/employees", tags=["Employees"])
 app.include_router(audit.router, prefix="/api/audit", tags=["Audit Trail"])
+
+# Serve uploaded receipt files
+uploads_dir = os.path.join(os.path.dirname(__file__), "uploads")
+os.makedirs(uploads_dir, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 
 
 @app.get("/")

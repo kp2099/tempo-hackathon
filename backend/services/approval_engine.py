@@ -166,11 +166,11 @@ class ApprovalEngine:
                 f"Factors: {', '.join(risk_factors[:3]) if risk_factors else 'Multiple signals'}"
             )
 
-        # Anomaly detected → flag for review
-        if anomaly_detected and anomaly_score > 0.6:
+        # Anomaly detected → flag for review (only for very strong anomalies)
+        if anomaly_detected and anomaly_score > 0.8:
             return (
                 "flagged",
-                f"Anomaly detected (score: {anomaly_score:.2f}). "
+                f"Strong anomaly detected (score: {anomaly_score:.2f}). "
                 f"Statistical outlier in spending pattern."
             )
 

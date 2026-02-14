@@ -3,7 +3,7 @@ Expense API endpoints.
 Handles submission, AI processing, approval, and payment execution on Tempo.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc
@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Optional
 import uuid
 import json
+import os
 import logging
 
 from database import get_db, ExpenseDB, AuditLogDB, EmployeeDB
@@ -30,13 +31,20 @@ class NLParseRequest(BaseModel):
     text: str
 
 
+class DisputeRequest(BaseModel):
+    """Request body for disputing a rejected/flagged expense."""
+    reason: str
+
+
 def _build_expense_features(expense: ExpenseCreate, db: Session) -> dict:
     """Build the full feature dict needed by the ML models."""
     now = datetime.utcnow()
 
     # Get employee's historical data for behavioral features
+    # IMPORTANT: Exclude rejected/flagged expenses so they don't skew averages
     employee_expenses = db.query(ExpenseDB).filter(
-        ExpenseDB.employee_id == expense.employee_id
+        ExpenseDB.employee_id == expense.employee_id,
+        ExpenseDB.status.notin_(["rejected", "flagged"]),
     ).all()
 
     monthly_expenses = [
@@ -135,6 +143,7 @@ async def submit_expense(expense: ExpenseCreate, db: Session = Depends(get_db)):
         merchant=expense.merchant,
         description=expense.description,
         receipt_attached=expense.receipt_attached,
+        receipt_file_path=expense.receipt_file_path,
         risk_score=decision.risk_score,
         anomaly_score=decision.anomaly_score,
         ai_category=decision.predicted_category,
@@ -191,12 +200,30 @@ async def submit_expense(expense: ExpenseCreate, db: Session = Depends(get_db)):
         f"{db_expense.status} (Risk: {decision.risk_score:.3f})"
     )
 
+    # Get ensemble layer scores from the risk scorer for transparency
+    risk_scorer = approval_engine.risk_scorer
+    layer_scores = {}
+    model_used = "ensemble"
+    try:
+        risk_result = risk_scorer.predict_risk(features)
+        layer_scores = risk_result.get("layer_scores", {})
+        model_used = risk_result.get("model_used", "ensemble")
+    except Exception:
+        pass
+
     # Build enriched response with risk explanation and fee info
     response_data = ExpenseResponse.model_validate(db_expense)
     result = response_data.model_dump()
     result["risk_explanation"] = risk_explanation
     result["fee_sponsored"] = db_expense.tx_hash is not None
     result["fee_sponsor_label"] = "AgentFin Agent Wallet" if db_expense.tx_hash else None
+    result["model_used"] = model_used
+    result["risk_level"] = (
+        "low" if decision.risk_score < 0.3
+        else "medium" if decision.risk_score < 0.7
+        else "high"
+    )
+    result["layer_scores"] = layer_scores
 
     return result
 
@@ -267,7 +294,7 @@ async def manually_approve(expense_id: str, db: Session = Depends(get_db)):
     if not expense:
         raise HTTPException(status_code=404, detail="Expense not found")
 
-    if expense.status not in ["manager_review", "pending"]:
+    if expense.status not in ["manager_review", "pending", "disputed"]:
         raise HTTPException(status_code=400, detail=f"Cannot approve expense in '{expense.status}' status")
 
     # Get employee wallet
@@ -331,6 +358,112 @@ async def manually_reject(expense_id: str, db: Session = Depends(get_db)):
     db.commit()
 
     return {"message": f"Expense {expense_id} rejected", "status": "rejected"}
+
+
+# ─── Receipt Upload ──────────────────────────────────────────────
+
+UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads", "receipts")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+
+@router.post("/upload-receipt")
+async def upload_receipt(file: UploadFile = File(...)):
+    """
+    Upload a receipt image/PDF. Returns the file path to attach to an expense.
+    Supports JPEG, PNG, PDF files up to 10MB.
+    """
+    # Validate file type
+    allowed_types = ["image/jpeg", "image/png", "image/gif", "image/webp", "application/pdf"]
+    if file.content_type not in allowed_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File type '{file.content_type}' not allowed. Use JPEG, PNG, or PDF."
+        )
+
+    # Validate file size (10MB max)
+    contents = await file.read()
+    if len(contents) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large. Maximum 10MB.")
+
+    # Save file with unique name
+    ext = file.filename.split(".")[-1] if "." in file.filename else "jpg"
+    filename = f"receipt_{uuid.uuid4().hex[:12]}.{ext}"
+    filepath = os.path.join(UPLOAD_DIR, filename)
+
+    with open(filepath, "wb") as f:
+        f.write(contents)
+
+    logger.info(f"📎 Receipt uploaded: {filename} ({len(contents)} bytes)")
+
+    return {
+        "filename": filename,
+        "filepath": f"/uploads/receipts/{filename}",
+        "size_bytes": len(contents),
+        "content_type": file.content_type,
+    }
+
+
+# ─── Dispute / Raise Exception ──────────────────────────────────
+
+@router.post("/{expense_id}/dispute")
+async def dispute_expense(
+    expense_id: str,
+    request: DisputeRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Raise an exception / dispute a rejected or flagged expense.
+
+    This allows employees to contest AI decisions. The expense moves
+    to 'disputed' status and is escalated for manager review with the
+    employee's justification attached.
+    """
+    expense = db.query(ExpenseDB).filter(ExpenseDB.expense_id == expense_id).first()
+    if not expense:
+        raise HTTPException(status_code=404, detail="Expense not found")
+
+    if expense.status not in ["rejected", "flagged"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Can only dispute rejected or flagged expenses. "
+                   f"Current status: '{expense.status}'"
+        )
+
+    old_status = expense.status
+    expense.status = "disputed"
+    expense.approval_reason = (
+        f"[DISPUTED] Employee contested {old_status} decision. "
+        f"Reason: {request.reason}. "
+        f"Original: {expense.approval_reason or 'N/A'}"
+    )
+
+    # Create audit log entry
+    audit = AuditLogDB(
+        expense_id=expense_id,
+        action="expense_disputed",
+        actor=expense.employee_id,
+        details=json.dumps({
+            "previous_status": old_status,
+            "dispute_reason": request.reason,
+            "risk_score": expense.risk_score,
+        }),
+        risk_score=expense.risk_score,
+    )
+    db.add(audit)
+    db.commit()
+    db.refresh(expense)
+
+    logger.info(
+        f"⚠️ Expense {expense_id} disputed by {expense.employee_id}: {request.reason}"
+    )
+
+    return {
+        "message": f"Exception raised for expense {expense_id}",
+        "expense_id": expense_id,
+        "previous_status": old_status,
+        "new_status": "disputed",
+        "dispute_reason": request.reason,
+    }
 
 
 # ─── Natural Language Parsing ─────────────────────────────────────

@@ -14,8 +14,16 @@ export const getExpenseStats = () => api.get('/expenses/stats');
 export const getExpense = (id) => api.get(`/expenses/${id}`);
 export const approveExpense = (id) => api.post(`/expenses/${id}/approve`);
 export const rejectExpense = (id) => api.post(`/expenses/${id}/reject`);
+export const disputeExpense = (id, reason) => api.post(`/expenses/${id}/dispute`, { reason });
 export const parseExpenseText = (text) => api.post('/expenses/parse', { text });
 export const batchApprove = () => api.post('/expenses/batch-approve');
+export const uploadReceipt = (file) => {
+  const formData = new FormData();
+  formData.append('file', file);
+  return api.post('/expenses/upload-receipt', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+};
 
 // ---- Employees ----
 export const getEmployees = () => api.get('/employees/');

@@ -2,9 +2,10 @@ import { useState, useEffect, useRef } from 'react';
 import {
   Send, Loader2, CheckCircle, AlertTriangle, XCircle, Bot,
   Sparkles, Mic, Zap, Shield, ExternalLink, ArrowRight,
-  DollarSign, Tag, Building, FileText, ReceiptText,
+  DollarSign, Tag, Building, FileText, ReceiptText, Upload, X,
+  Paperclip,
 } from 'lucide-react';
-import { submitExpense, getEmployees, parseExpenseText } from '../api/client';
+import { submitExpense, getEmployees, parseExpenseText, uploadReceipt } from '../api/client';
 import RiskGauge from './RiskGauge';
 
 const CATEGORIES = [
@@ -38,6 +39,10 @@ export default function ExpenseForm() {
   const [nlParsing, setNlParsing] = useState(false);
   const [nlResult, setNlResult] = useState(null);
   const [showConfetti, setShowConfetti] = useState(false);
+  const [receiptFile, setReceiptFile] = useState(null);
+  const [receiptPreview, setReceiptPreview] = useState(null);
+  const [uploadingReceipt, setUploadingReceipt] = useState(false);
+  const fileInputRef = useRef(null);
   const resultRef = useRef(null);
   const [form, setForm] = useState({
     employee_id: '',
@@ -62,6 +67,46 @@ export default function ExpenseForm() {
     } catch (err) {
       console.error('Failed to load employees:', err);
     }
+  };
+
+  // ─── Receipt Upload ─────────────────────────────────
+  const handleReceiptSelect = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Preview for images
+    if (file.type.startsWith('image/')) {
+      const reader = new FileReader();
+      reader.onload = (ev) => setReceiptPreview(ev.target.result);
+      reader.readAsDataURL(file);
+    } else {
+      setReceiptPreview(null);
+    }
+
+    setReceiptFile(file);
+    setUploadingReceipt(true);
+
+    try {
+      const res = await uploadReceipt(file);
+      setForm(f => ({
+        ...f,
+        receipt_attached: true,
+        receipt_file_path: res.data.filepath,
+      }));
+    } catch (err) {
+      console.error('Receipt upload failed:', err);
+      // Still mark as attached even if upload fails
+      setForm(f => ({ ...f, receipt_attached: true }));
+    } finally {
+      setUploadingReceipt(false);
+    }
+  };
+
+  const removeReceipt = () => {
+    setReceiptFile(null);
+    setReceiptPreview(null);
+    setForm(f => ({ ...f, receipt_attached: false, receipt_file_path: '' }));
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   // ─── Natural Language Parsing ────────────────────────
@@ -159,6 +204,9 @@ export default function ExpenseForm() {
     setResult(null);
     setNlResult(null);
     setNlText('');
+    setReceiptFile(null);
+    setReceiptPreview(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
     setForm({
       employee_id: employees[0]?.employee_id || '',
       amount: '',
@@ -166,6 +214,7 @@ export default function ExpenseForm() {
       merchant: '',
       description: '',
       receipt_attached: true,
+      receipt_file_path: '',
     });
   };
 
@@ -420,20 +469,63 @@ export default function ExpenseForm() {
               />
             </div>
 
-            {/* Receipt toggle */}
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={() => setForm({ ...form, receipt_attached: !form.receipt_attached })}
-                className={`relative w-12 h-6 rounded-full transition-colors ${
-                  form.receipt_attached ? 'bg-blue-600' : 'bg-slate-600'
-                }`}
-              >
-                <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${
-                  form.receipt_attached ? 'translate-x-6' : ''
-                }`} />
-              </button>
-              <span className="text-sm text-slate-300">Receipt attached</span>
+            {/* Receipt Upload */}
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-2">Receipt</label>
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleReceiptSelect}
+                accept="image/*,.pdf"
+                className="hidden"
+              />
+              {!receiptFile ? (
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex items-center gap-2 px-4 py-2.5 bg-slate-700 hover:bg-slate-600 border border-slate-600 hover:border-slate-500 rounded-lg text-slate-300 text-sm transition-all"
+                  >
+                    <Upload className="w-4 h-4" />
+                    Upload Receipt
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setForm({ ...form, receipt_attached: !form.receipt_attached })}
+                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-all border ${
+                      form.receipt_attached
+                        ? 'bg-green-600/20 text-green-400 border-green-500/30'
+                        : 'bg-slate-700/50 text-slate-400 border-slate-600 hover:text-white hover:bg-slate-700'
+                    }`}
+                  >
+                    <Paperclip className="w-3 h-3" />
+                    {form.receipt_attached ? 'Receipt Attached' : 'No Receipt'}
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-3 bg-green-900/20 border border-green-800/30 rounded-lg px-3 py-2.5">
+                  {receiptPreview ? (
+                    <img src={receiptPreview} alt="Receipt" className="w-10 h-10 object-cover rounded" />
+                  ) : (
+                    <FileText className="w-10 h-10 text-green-400" />
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-green-400 font-medium truncate">{receiptFile.name}</p>
+                    <p className="text-xs text-green-300/60">
+                      {(receiptFile.size / 1024).toFixed(0)} KB
+                      {uploadingReceipt && ' • Uploading...'}
+                      {!uploadingReceipt && ' • ✅ Uploaded'}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={removeReceipt}
+                    className="p-1 text-slate-400 hover:text-red-400 transition-colors"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Submit button */}
@@ -495,14 +587,60 @@ export default function ExpenseForm() {
                     <p className="text-white mt-0.5">{((result.risk_score || 0) * 100).toFixed(1)}%</p>
                   </div>
                   <div className="bg-slate-900/30 rounded-lg px-3 py-2">
-                    <span className="text-slate-400 text-xs">AI Category</span>
-                    <p className="text-white mt-0.5">{result.ai_category}</p>
+                    <span className="text-slate-400 text-xs">AI Suggestion</span>
+                    <p className="text-white mt-0.5">
+                      {result.ai_category}
+                      {result.ai_category && result.category && result.ai_category !== result.category && (
+                        <span className="text-yellow-400 text-[10px] ml-1">(you chose: {result.category})</span>
+                      )}
+                      {result.ai_category && result.category && result.ai_category === result.category && (
+                        <span className="text-green-400 text-[10px] ml-1">✓ matches</span>
+                      )}
+                    </p>
                   </div>
                   <div className="bg-slate-900/30 rounded-lg px-3 py-2">
                     <span className="text-slate-400 text-xs">Anomaly Score</span>
                     <p className="text-white mt-0.5">{((result.anomaly_score || 0) * 100).toFixed(1)}%</p>
                   </div>
                 </div>
+
+                {/* Ensemble Model Breakdown */}
+                {result.layer_scores && (
+                  <div className="mt-4 bg-slate-900/40 rounded-lg p-3 border border-slate-700/50">
+                    <p className="text-xs text-slate-400 mb-2 flex items-center gap-1">
+                      🧠 AI Ensemble Breakdown
+                      <span className="text-slate-500 ml-1">
+                        (trained on 284K real transactions)
+                      </span>
+                    </p>
+                    <div className="space-y-2">
+                      {Object.entries(result.layer_scores).map(([layer, score]) => (
+                        <div key={layer} className="flex items-center gap-2">
+                          <span className="text-xs text-slate-400 w-36 truncate">
+                            {layer.replace(/_/g, ' ')}
+                          </span>
+                          <div className="flex-1 bg-slate-800 rounded-full h-2">
+                            <div
+                              className={`h-2 rounded-full transition-all ${
+                                score < 0.3 ? 'bg-green-500' :
+                                score < 0.6 ? 'bg-yellow-500' : 'bg-red-500'
+                              }`}
+                              style={{ width: `${Math.min(score * 100, 100)}%` }}
+                            />
+                          </div>
+                          <span className="text-xs text-slate-300 w-12 text-right">
+                            {(score * 100).toFixed(1)}%
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                    {result.model_used && (
+                      <p className="text-xs text-slate-500 mt-2 font-mono">
+                        Model: {result.model_used}
+                      </p>
+                    )}
+                  </div>
+                )}
 
                 {/* Fee Sponsorship Badge */}
                 {result.fee_sponsored && (

@@ -29,6 +29,7 @@ class ExpenseStatus(str, enum.Enum):
     APPROVED = "approved"
     REJECTED = "rejected"
     FLAGGED = "flagged"
+    DISPUTED = "disputed"
     PAID = "paid"
 
 
@@ -57,7 +58,7 @@ class EmployeeDB(Base):
     department = Column(String(50), nullable=False)
     role = Column(String(50), default="employee")
     tempo_wallet = Column(String(42), nullable=True)  # Tempo EVM address (0x...)
-    monthly_limit = Column(Float, default=5000.0)
+    monthly_limit = Column(Float, default=10000.0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -73,6 +74,7 @@ class ExpenseDB(Base):
     merchant = Column(String(100), nullable=True)
     description = Column(Text, nullable=True)
     receipt_attached = Column(Boolean, default=False)
+    receipt_file_path = Column(String(300), nullable=True)  # Path to uploaded receipt
 
     # AI Scoring
     risk_score = Column(Float, nullable=True)

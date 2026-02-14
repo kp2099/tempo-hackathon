@@ -13,6 +13,7 @@ class ExpenseCreate(BaseModel):
     merchant: Optional[str] = Field(None, description="Merchant/vendor name")
     description: Optional[str] = Field(None, description="Expense description")
     receipt_attached: bool = Field(False, description="Whether a receipt is attached")
+    receipt_file_path: Optional[str] = Field(None, description="Path to uploaded receipt file")
 
 
 class ExpenseResponse(BaseModel):
@@ -26,6 +27,7 @@ class ExpenseResponse(BaseModel):
     merchant: Optional[str] = None
     description: Optional[str] = None
     receipt_attached: bool
+    receipt_file_path: Optional[str] = None
 
     # AI Scoring
     risk_score: Optional[float] = None

@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     # AI Agent Thresholds
     risk_threshold_auto_approve: float = 0.3
     risk_threshold_auto_reject: float = 0.7
-    max_auto_approve_amount: float = 500.0
+    max_auto_approve_amount: float = 2000.0
 
     # App
     database_url: str = "sqlite:///./tempoexpense.db"
