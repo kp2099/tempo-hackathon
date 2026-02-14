@@ -16,6 +16,7 @@ import logging
 from config import settings
 from database import create_tables, SessionLocal, PolicyDB
 from routers import expenses, employees, audit
+from routers import approval_rules
 from ml.train import ensure_models_exist
 from services.seed_data import seed_demo_data
 
@@ -71,6 +72,7 @@ app.add_middleware(
 app.include_router(expenses.router, prefix="/api/expenses", tags=["Expenses"])
 app.include_router(employees.router, prefix="/api/employees", tags=["Employees"])
 app.include_router(audit.router, prefix="/api/audit", tags=["Audit Trail"])
+app.include_router(approval_rules.router, prefix="/api/approval", tags=["Approval Rules & Org"])
 
 # Serve uploaded receipt files
 uploads_dir = os.path.join(os.path.dirname(__file__), "uploads")

@@ -1,20 +1,23 @@
 import { useState, useEffect } from 'react';
-import { RefreshCw, ExternalLink, CheckCircle, Clock, XCircle, AlertTriangle, Zap, Shield, MessageSquare } from 'lucide-react';
+import { RefreshCw, ExternalLink, CheckCircle, Clock, XCircle, AlertTriangle, Zap, Shield, MessageSquare, GitBranch } from 'lucide-react';
 import { getExpenses, approveExpense, rejectExpense, disputeExpense } from '../api/client';
 import RiskGauge from './RiskGauge';
+import ApprovalChain from './ApprovalChain';
 
 const statusConfig = {
   paid: { icon: CheckCircle, color: 'text-green-400', bg: 'bg-green-500/10', label: 'Paid' },
   auto_approved: { icon: CheckCircle, color: 'text-green-400', bg: 'bg-green-500/10', label: 'Auto-Approved' },
   approved: { icon: CheckCircle, color: 'text-green-400', bg: 'bg-green-500/10', label: 'Approved' },
+  pending_approval: { icon: GitBranch, color: 'text-blue-400', bg: 'bg-blue-500/10', label: 'In Approval Chain' },
   manager_review: { icon: Clock, color: 'text-yellow-400', bg: 'bg-yellow-500/10', label: 'Review' },
   pending: { icon: Clock, color: 'text-slate-400', bg: 'bg-slate-500/10', label: 'Pending' },
   rejected: { icon: XCircle, color: 'text-red-400', bg: 'bg-red-500/10', label: 'Rejected' },
   flagged: { icon: AlertTriangle, color: 'text-red-400', bg: 'bg-red-500/10', label: 'Flagged' },
   disputed: { icon: MessageSquare, color: 'text-orange-400', bg: 'bg-orange-500/10', label: 'Disputed' },
+  escalated: { icon: GitBranch, color: 'text-purple-400', bg: 'bg-purple-500/10', label: 'Escalated' },
 };
 
-export default function ExpenseList({ filterStatus, showActions, employeeId, limit }) {
+export default function ExpenseList({ filterStatus, showActions, employeeId, limit, currentApproverId, isAdmin = false }) {
   const [expenses, setExpenses] = useState([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -167,7 +170,7 @@ export default function ExpenseList({ filterStatus, showActions, employeeId, lim
                 </div>
 
                 {/* Actions */}
-                {showActions && (expense.status === 'manager_review' || expense.status === 'disputed') && (
+                {showActions && (expense.status === 'manager_review' || expense.status === 'disputed' || expense.status === 'pending_approval') && (
                   <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
                     <button
                       onClick={() => handleApprove(expense.expense_id)}
@@ -207,7 +210,27 @@ export default function ExpenseList({ filterStatus, showActions, employeeId, lim
 
               {/* Expanded details */}
               {selectedExpense?.expense_id === expense.expense_id && (
-                <div className="mt-4 pt-4 border-t border-slate-700 space-y-3 animate-fadeIn">
+                <div className="mt-4 pt-4 border-t border-slate-700 space-y-3 animate-fadeIn" onClick={(e) => e.stopPropagation()}>
+                  {/* Approval Chain (multi-step) */}
+                  {(expense.total_steps > 0 || expense.status === 'pending_approval') && (
+                    <ApprovalChain
+                      expenseId={expense.expense_id}
+                      currentApproverId={currentApproverId}
+                      isAdmin={isAdmin}
+                      onAction={loadExpenses}
+                    />
+                  )}
+
+                  {/* Step progress indicator */}
+                  {expense.total_steps > 0 && (
+                    <div className="flex items-center gap-2 text-xs">
+                      <GitBranch className="w-3 h-3 text-blue-400" />
+                      <span className="text-slate-400">
+                        Step {expense.current_step || 1} of {expense.total_steps}
+                      </span>
+                    </div>
+                  )}
+
                   {/* AI Reason */}
                   {expense.approval_reason && (
                     <div className="bg-slate-900/60 rounded-lg p-3">

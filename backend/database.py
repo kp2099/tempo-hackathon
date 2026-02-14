@@ -1,10 +1,11 @@
 """SQLAlchemy database setup and table definitions."""
 
 from sqlalchemy import (
-    create_engine, Column, Integer, Float, String, DateTime, Boolean, Text, Enum
+    create_engine, Column, Integer, Float, String, DateTime, Boolean, Text, Enum,
+    ForeignKey, JSON
 )
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
 import enum
 
@@ -26,10 +27,12 @@ class ExpenseStatus(str, enum.Enum):
     PENDING = "pending"
     AUTO_APPROVED = "auto_approved"
     MANAGER_REVIEW = "manager_review"
+    PENDING_APPROVAL = "pending_approval"  # Multi-step: waiting on next approver
     APPROVED = "approved"
     REJECTED = "rejected"
     FLAGGED = "flagged"
     DISPUTED = "disputed"
+    ESCALATED = "escalated"
     PAID = "paid"
 
 
@@ -57,6 +60,7 @@ class EmployeeDB(Base):
     email = Column(String(100), nullable=False)
     department = Column(String(50), nullable=False)
     role = Column(String(50), default="employee")
+    reports_to = Column(String(50), nullable=True)  # employee_id of direct manager
     tempo_wallet = Column(String(42), nullable=True)  # Tempo EVM address (0x...)
     monthly_limit = Column(Float, default=10000.0)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -92,6 +96,8 @@ class ExpenseDB(Base):
 
     # Approval
     status = Column(String(20), default=ExpenseStatus.PENDING)
+    current_step = Column(Integer, default=0)  # Current approval step (0 = not started)
+    total_steps = Column(Integer, default=0)   # Total approval steps required
     approved_by = Column(String(50), nullable=True)  # "AgentFin" or manager name
     approval_reason = Column(Text, nullable=True)
 
@@ -131,6 +137,56 @@ class PolicyDB(Base):
     monthly_limit = Column(Float, nullable=True)
     department = Column(String(50), nullable=True)  # None = applies to all
     active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ApprovalRuleDB(Base):
+    """
+    Configurable approval routing rules.
+    Determines which approvers are required for a given expense based on
+    category, department, and amount thresholds.
+    """
+    __tablename__ = "approval_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(150), nullable=False)
+    description = Column(Text, nullable=True)
+
+    # Match criteria (None / "*" = match all)
+    category = Column(String(30), nullable=True)       # e.g. "travel", "client_entertainment", None=any
+    department = Column(String(50), nullable=True)      # e.g. "sales", "engineering", None=any
+    amount_min = Column(Float, nullable=True)           # Minimum amount to trigger rule
+    amount_max = Column(Float, nullable=True)           # Maximum amount (None = no upper bound)
+
+    # Approval chain — JSON list of approver roles in order
+    # e.g. ["direct_manager", "finance"] or ["direct_manager", "department_head"]
+    # Valid roles: direct_manager, department_head, finance, vp, cfo
+    required_approvers = Column(Text, nullable=False)   # JSON array of role strings
+
+    # sequential = step 1 must approve before step 2 sees it
+    approval_type = Column(String(20), default="sequential")  # "sequential" or "parallel"
+
+    priority = Column(Integer, default=100)  # Lower number = higher priority (first match wins)
+    active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ApprovalStepDB(Base):
+    """
+    Individual approval steps for an expense.
+    Tracks the state of each approver in the multi-step approval chain.
+    """
+    __tablename__ = "approval_steps"
+
+    id = Column(Integer, primary_key=True, index=True)
+    expense_id = Column(String(50), nullable=False, index=True)
+    step_order = Column(Integer, nullable=False)       # 1, 2, 3...
+    approver_role = Column(String(50), nullable=False)  # "direct_manager", "finance", etc.
+    approver_id = Column(String(50), nullable=True)     # Resolved employee_id of the approver
+    approver_name = Column(String(100), nullable=True)  # Display name
+    status = Column(String(20), default="pending")      # pending, approved, rejected, escalated, skipped
+    comments = Column(Text, nullable=True)
+    acted_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
