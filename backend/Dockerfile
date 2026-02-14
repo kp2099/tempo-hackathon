@@ -28,4 +28,5 @@ RUN mkdir -p /app/ml/models /app/ml/data
 EXPOSE 8000
 
 # Run the application
-CMD ["python", "main.py"]
+# Use shell form so $PORT is expanded at runtime (Render sets it dynamically)
+CMD python main.py

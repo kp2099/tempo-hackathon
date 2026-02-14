@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./tempoexpense.db"
     api_host: str = "0.0.0.0"
     api_port: int = 8000
+    port: int = 0  # Render sets $PORT dynamically; 0 = not set
     debug: bool = True
 
     class Config:

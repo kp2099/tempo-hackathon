@@ -121,9 +121,11 @@ async def health():
 
 if __name__ == "__main__":
     import uvicorn
+    # Render sets $PORT dynamically — prefer it over api_port
+    port = settings.port if settings.port else settings.api_port
     uvicorn.run(
         "main:app",
         host=settings.api_host,
-        port=settings.api_port,
+        port=port,
         reload=settings.debug,
     )
