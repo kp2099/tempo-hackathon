@@ -24,9 +24,8 @@ COPY . .
 # Create directory for database and models
 RUN mkdir -p /app/ml/models /app/ml/data
 
-# Expose port
-EXPOSE 8000
+# Expose port (Render overrides with $PORT at runtime)
+EXPOSE ${PORT:-8000}
 
-# Run the application
-# Use shell form so $PORT is expanded at runtime (Render sets it dynamically)
-CMD python main.py
+# Run the application — shell form so $PORT is expanded
+CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
