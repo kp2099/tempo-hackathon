@@ -37,6 +37,11 @@ class DisputeRequest(BaseModel):
     reason: str
 
 
+class OverrideRequest(BaseModel):
+    """Request body for overriding an AI decision and sending to manager."""
+    reason: Optional[str] = None
+
+
 def _build_expense_features(expense: ExpenseCreate, db: Session, ocr_features: dict = None) -> dict:
     """Build the full feature dict needed by the ML models."""
     now = datetime.utcnow()
@@ -302,7 +307,12 @@ async def list_expenses(
     query = db.query(ExpenseDB)
 
     if status:
-        query = query.filter(ExpenseDB.status == status)
+        # Support comma-separated statuses, e.g. "manager_review,disputed"
+        statuses = [s.strip() for s in status.split(",")]
+        if len(statuses) == 1:
+            query = query.filter(ExpenseDB.status == statuses[0])
+        else:
+            query = query.filter(ExpenseDB.status.in_(statuses))
     if employee_id:
         query = query.filter(ExpenseDB.employee_id == employee_id)
 
@@ -541,6 +551,71 @@ async def dispute_expense(
         "previous_status": old_status,
         "new_status": "disputed",
         "dispute_reason": request.reason,
+    }
+
+
+# ─── Override AI Decision ────────────────────────────────────────
+
+@router.post("/{expense_id}/override")
+async def override_expense(
+    expense_id: str,
+    request: OverrideRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Override an AI-flagged/rejected expense and send it directly for manager approval.
+
+    The AI agent can sometimes be wrong. This gives employees the ability
+    to override the AI decision and escalate to a human manager for review.
+    """
+    expense = db.query(ExpenseDB).filter(ExpenseDB.expense_id == expense_id).first()
+    if not expense:
+        raise HTTPException(status_code=404, detail="Expense not found")
+
+    if expense.status not in ["rejected", "flagged"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Can only override rejected or flagged expenses. "
+                   f"Current status: '{expense.status}'"
+        )
+
+    old_status = expense.status
+    override_note = request.reason if request.reason else "Employee override — no additional note"
+    expense.status = "disputed"
+    expense.approval_reason = (
+        f"[DISPUTED] Employee overrode AI {old_status} decision → pending manager review. "
+        f"Note: {override_note}. "
+        f"Original AI reason: {expense.approval_reason or 'N/A'}"
+    )
+
+    # Create audit log entry
+    audit = AuditLogDB(
+        expense_id=expense_id,
+        action="expense_overridden",
+        actor=expense.employee_id,
+        details=json.dumps({
+            "previous_status": old_status,
+            "new_status": "disputed",
+            "override_reason": override_note,
+            "risk_score": expense.risk_score,
+        }),
+        risk_score=expense.risk_score,
+    )
+    db.add(audit)
+    db.commit()
+    db.refresh(expense)
+
+    logger.info(
+        f"🔄 Expense {expense_id} overridden by {expense.employee_id}: "
+        f"{old_status} → disputed (reason: {override_note})"
+    )
+
+    return {
+        "message": f"Expense {expense_id} disputed and sent for manager review",
+        "expense_id": expense_id,
+        "previous_status": old_status,
+        "new_status": "disputed",
+        "override_reason": override_note,
     }
 
 

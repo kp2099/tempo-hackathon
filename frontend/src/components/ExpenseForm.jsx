@@ -5,7 +5,7 @@ import {
   DollarSign, Tag, Building, FileText, ReceiptText, Upload, X,
   Paperclip,
 } from 'lucide-react';
-import { submitExpense, getEmployees, parseExpenseText, uploadReceipt } from '../api/client';
+import { submitExpense, getEmployees, parseExpenseText, uploadReceipt, overrideExpense } from '../api/client';
 import RiskGauge from './RiskGauge';
 
 const CATEGORIES = [
@@ -44,6 +44,9 @@ export default function ExpenseForm() {
   const [receiptPreview, setReceiptPreview] = useState(null);
   const [uploadingReceipt, setUploadingReceipt] = useState(false);
   const [ocrResult, setOcrResult] = useState(null);
+  const [overrideLoading, setOverrideLoading] = useState(false);
+  const [overrideNote, setOverrideNote] = useState('');
+  const [showOverrideForm, setShowOverrideForm] = useState(false);
   const fileInputRef = useRef(null);
   const resultRef = useRef(null);
   const [form, setForm] = useState({
@@ -208,6 +211,8 @@ export default function ExpenseForm() {
         return { icon: CheckCircle, color: 'text-green-400', bg: 'bg-green-500/10 border-green-500/30', label: '✅ Auto-Approved & Paid on Tempo', glow: 'glow-green' };
       case 'manager_review':
         return { icon: AlertTriangle, color: 'text-yellow-400', bg: 'bg-yellow-500/10 border-yellow-500/30', label: '⏳ Sent to Manager Review', glow: 'glow-yellow' };
+      case 'disputed':
+        return { icon: AlertTriangle, color: 'text-orange-400', bg: 'bg-orange-500/10 border-orange-500/30', label: '⚖️ Disputed — Pending Manager Review', glow: 'glow-yellow' };
       case 'rejected':
       case 'flagged':
         return { icon: XCircle, color: 'text-red-400', bg: 'bg-red-500/10 border-red-500/30', label: '🚨 Flagged / Rejected', glow: 'glow-red' };
@@ -222,6 +227,8 @@ export default function ExpenseForm() {
     setNlText('');
     setReceiptFile(null);
     setReceiptPreview(null);
+    setShowOverrideForm(false);
+    setOverrideNote('');
     if (fileInputRef.current) fileInputRef.current.value = '';
     setForm({
       employee_id: employees[0]?.employee_id || '',
@@ -232,6 +239,25 @@ export default function ExpenseForm() {
       receipt_attached: true,
       receipt_file_path: '',
     });
+  };
+
+  const handleOverride = async () => {
+    if (!result?.expense_id) return;
+    setOverrideLoading(true);
+    try {
+      await overrideExpense(result.expense_id, overrideNote.trim() || null);
+      setResult(prev => ({
+        ...prev,
+        status: 'disputed',
+        approval_reason: `[DISPUTED] Sent for manager review. ${overrideNote.trim() ? `Note: ${overrideNote.trim()}` : ''}`,
+      }));
+      setShowOverrideForm(false);
+      setOverrideNote('');
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Override failed');
+    } finally {
+      setOverrideLoading(false);
+    }
   };
 
   return (
@@ -831,6 +857,63 @@ export default function ExpenseForm() {
                 )}
               </div>
             </div>
+
+            {/* Override — Send for Manager Approval (only for flagged/rejected) */}
+            {(result.status === 'rejected' || result.status === 'flagged') && (
+              <div className="mt-5">
+                <div className="bg-orange-900/10 border border-orange-800/30 rounded-lg p-4">
+                  <div className="flex items-start gap-3 mb-3">
+                    <AlertTriangle className="w-5 h-5 text-orange-400 mt-0.5 flex-shrink-0" />
+                    <div>
+                      <p className="text-sm text-orange-300 font-medium">Think the AI got it wrong?</p>
+                      <p className="text-xs text-slate-400 mt-1">
+                        You can override the AI decision and send this expense directly to a manager for human review.
+                      </p>
+                    </div>
+                  </div>
+
+                  {showOverrideForm ? (
+                    <div className="space-y-3 animate-fadeIn">
+                      <textarea
+                        value={overrideNote}
+                        onChange={(e) => setOverrideNote(e.target.value)}
+                        placeholder="(Optional) Add a note for the manager explaining why this should be approved..."
+                        className="w-full bg-slate-800 border border-orange-700/30 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:ring-1 focus:ring-orange-500 resize-none"
+                        rows={2}
+                      />
+                      <div className="flex gap-2">
+                        <button
+                          onClick={handleOverride}
+                          disabled={overrideLoading}
+                          className="flex-1 px-4 py-2.5 bg-orange-600 hover:bg-orange-500 text-white text-sm rounded-lg font-medium transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                        >
+                          {overrideLoading ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Shield className="w-4 h-4" />
+                          )}
+                          Send for Manager Approval
+                        </button>
+                        <button
+                          onClick={() => { setShowOverrideForm(false); setOverrideNote(''); }}
+                          className="px-4 py-2.5 bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm rounded-lg font-medium transition-colors"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setShowOverrideForm(true)}
+                      className="w-full px-4 py-2.5 bg-orange-600/20 hover:bg-orange-600/30 border border-orange-500/30 hover:border-orange-500/50 text-orange-400 hover:text-orange-300 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2"
+                    >
+                      <Shield className="w-4 h-4" />
+                      Override AI Decision — Request Manager Approval
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Submit Another */}
             <button
