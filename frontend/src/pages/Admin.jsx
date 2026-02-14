@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
-import { Shield, Users, Wallet, Zap, CheckCircle, ExternalLink, Loader2, History } from 'lucide-react';
+import { Shield, Users, Wallet, Zap, CheckCircle, ExternalLink, Loader2, History, GitBranch, Settings } from 'lucide-react';
 import { getEmployees, getSpendingSummary, batchApprove } from '../api/client';
 import ExpenseList from '../components/ExpenseList';
+import OrgChart from '../components/OrgChart';
+import ApprovalRulesManager from '../components/ApprovalRulesManager';
 
 export default function Admin() {
   const [employees, setEmployees] = useState([]);
@@ -9,6 +11,7 @@ export default function Admin() {
   const [spending, setSpending] = useState(null);
   const [batchLoading, setBatchLoading] = useState(false);
   const [batchResult, setBatchResult] = useState(null);
+  const [activeTab, setActiveTab] = useState('review'); // 'review', 'rules', 'org'
 
   useEffect(() => {
     loadEmployees();
@@ -59,9 +62,45 @@ export default function Admin() {
           <Shield className="w-6 h-6 text-purple-400" />
           Admin Panel
         </h1>
-        <p className="text-slate-400 mt-1">Manage employees, review flagged expenses, and oversee AgentFin decisions</p>
+        <p className="text-slate-400 mt-1">Manage employees, approval rules, org hierarchy, and review expenses</p>
       </div>
 
+      {/* Tab Navigation */}
+      <div className="flex gap-1 bg-slate-800 p-1 rounded-lg w-fit">
+        {[
+          { id: 'review', label: 'Review Expenses', icon: Shield },
+          { id: 'rules', label: 'Approval Rules', icon: Settings },
+          { id: 'org', label: 'Org Hierarchy', icon: GitBranch },
+        ].map(tab => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-md transition-all ${
+              activeTab === tab.id
+                ? 'bg-purple-600 text-white shadow'
+                : 'text-slate-400 hover:text-white hover:bg-slate-700'
+            }`}
+          >
+            <tab.icon className="w-4 h-4" />
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab Content */}
+      {activeTab === 'rules' && (
+        <div className="bg-slate-800 rounded-xl border border-slate-700 p-5">
+          <ApprovalRulesManager />
+        </div>
+      )}
+
+      {activeTab === 'org' && (
+        <div className="bg-slate-800 rounded-xl border border-slate-700 p-5">
+          <OrgChart />
+        </div>
+      )}
+
+      {activeTab === 'review' && (
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Employees list */}
         <div className="bg-slate-800 rounded-xl border border-slate-700 p-5">
@@ -247,7 +286,7 @@ export default function Admin() {
               </div>
             )}
 
-            <ExpenseList filterStatus="manager_review,disputed" showActions={true} />
+            <ExpenseList filterStatus="manager_review,disputed,pending_approval" showActions={true} currentApproverId={selectedEmployee?.employee_id} isAdmin={true} />
           </div>
 
           {/* Past Activity for selected employee */}
@@ -267,6 +306,7 @@ export default function Admin() {
           )}
         </div>
       </div>
+      )}
     </div>
   );
 }

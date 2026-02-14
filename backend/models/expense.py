@@ -16,6 +16,17 @@ class ExpenseCreate(BaseModel):
     receipt_file_path: Optional[str] = Field(None, description="Path to uploaded receipt file")
 
 
+class ApprovalStepInfo(BaseModel):
+    """Approval step info embedded in expense response."""
+    step_order: int
+    approver_role: str
+    approver_id: Optional[str] = None
+    approver_name: Optional[str] = None
+    status: str
+    comments: Optional[str] = None
+    acted_at: Optional[datetime] = None
+
+
 class ExpenseResponse(BaseModel):
     """Full expense response with AI scoring and blockchain data."""
     id: int
@@ -43,6 +54,8 @@ class ExpenseResponse(BaseModel):
 
     # Approval
     status: str
+    current_step: Optional[int] = 0
+    total_steps: Optional[int] = 0
     approved_by: Optional[str] = None
     approval_reason: Optional[str] = None
 
@@ -60,6 +73,11 @@ class ExpenseResponse(BaseModel):
         from_attributes = True
 
 
+class ExpenseDetailResponse(ExpenseResponse):
+    """Extended expense response with approval steps."""
+    approval_steps: List[ApprovalStepInfo] = []
+
+
 class ExpenseListResponse(BaseModel):
     """Paginated expense list."""
     total: int
@@ -75,5 +93,6 @@ class ExpenseStats(BaseModel):
     rejected: int
     flagged: int
     paid: int
+    pending_approval: int
     avg_risk_score: float
     total_saved_time_hours: float

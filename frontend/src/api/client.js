@@ -26,10 +26,32 @@ export const uploadReceipt = (file) => {
   });
 };
 
+// ---- Multi-Step Approval ----
+export const getApprovalSteps = (expenseId) => api.get(`/expenses/${expenseId}/steps`);
+export const approveStep = (expenseId, approverId, comments) =>
+  api.post(`/expenses/${expenseId}/step/approve`, { approver_id: approverId, comments });
+export const rejectStep = (expenseId, approverId, comments) =>
+  api.post(`/expenses/${expenseId}/step/reject`, { approver_id: approverId, comments });
+export const escalateStep = (expenseId, approverId, comments) =>
+  api.post(`/expenses/${expenseId}/step/escalate`, { approver_id: approverId, comments });
+export const getPendingForApprover = (approverId) => api.get(`/expenses/pending-for/${approverId}`);
+
 // ---- Employees ----
 export const getEmployees = () => api.get('/employees/');
 export const getEmployee = (id) => api.get(`/employees/${id}`);
 export const getSpendingSummary = (id) => api.get(`/employees/${id}/spending`);
+
+// ---- Approval Rules ----
+export const getApprovalRules = (activeOnly = true) =>
+  api.get('/approval/rules', { params: { active_only: activeOnly } });
+export const createApprovalRule = (data) => api.post('/approval/rules', data);
+export const updateApprovalRule = (id, data) => api.put(`/approval/rules/${id}`, data);
+export const deleteApprovalRule = (id) => api.delete(`/approval/rules/${id}`);
+export const toggleApprovalRule = (id) => api.patch(`/approval/rules/${id}/toggle`);
+
+// ---- Org Hierarchy ----
+export const getOrgTree = () => api.get('/approval/org-tree');
+export const getOrgFlat = () => api.get('/approval/org-flat');
 
 // ---- Audit ----
 export const getAuditTrail = (params) => api.get('/audit/', { params });

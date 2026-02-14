@@ -1,6 +1,6 @@
 """
 Expense API endpoints.
-Handles submission, AI processing, approval, and payment execution on Tempo.
+Handles submission, AI processing, approval routing, and payment execution on Tempo.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
@@ -14,9 +14,10 @@ import json
 import os
 import logging
 
-from database import get_db, ExpenseDB, AuditLogDB, EmployeeDB
+from database import get_db, ExpenseDB, AuditLogDB, EmployeeDB, ApprovalStepDB
 from models.expense import ExpenseCreate, ExpenseResponse, ExpenseListResponse, ExpenseStats
 from services.approval_engine import ApprovalEngine
+from services.approval_routing import ApprovalRoutingService
 from services.tempo_client import get_tempo_client
 from services.nl_parser import parse_natural_language
 from services.risk_explainer import explain_risk
@@ -40,6 +41,12 @@ class DisputeRequest(BaseModel):
 class OverrideRequest(BaseModel):
     """Request body for overriding an AI decision and sending to manager."""
     reason: Optional[str] = None
+
+
+class StepActionRequest(BaseModel):
+    """Request body for approval step actions (approve/reject/escalate)."""
+    approver_id: str
+    comments: Optional[str] = None
 
 
 def _build_expense_features(expense: ExpenseCreate, db: Session, ocr_features: dict = None) -> dict:
@@ -164,7 +171,7 @@ async def submit_expense(expense: ExpenseCreate, db: Session = Depends(get_db)):
     approval_engine = ApprovalEngine(db=db)
 
     # 🤖 AgentFin evaluates the expense
-    decision = approval_engine.evaluate(features, expense.employee_id)
+    decision = approval_engine.evaluate(features, expense.employee_id, expense_id=expense_id)
 
     # Generate plain English risk explanation
     risk_explanation = explain_risk(
@@ -200,6 +207,8 @@ async def submit_expense(expense: ExpenseCreate, db: Session = Depends(get_db)):
         ai_category=decision.predicted_category,
         risk_factors=json.dumps(decision.risk_factors),
         status=decision.decision,
+        current_step=1 if decision.approval_steps else 0,
+        total_steps=decision.total_steps,
         approved_by="AgentFin" if decision.decision == "auto_approved" else None,
         approval_reason=decision.reason,
         memo=decision.memo,
@@ -276,6 +285,10 @@ async def submit_expense(expense: ExpenseCreate, db: Session = Depends(get_db)):
     )
     result["layer_scores"] = layer_scores
 
+    # Include approval chain steps if multi-step
+    if decision.approval_steps:
+        result["approval_steps"] = decision.approval_steps
+
     # Include OCR verification results if available
     if ocr_result.get("ocr_success"):
         result["ocr_verification"] = {
@@ -332,6 +345,7 @@ async def get_expense_stats(db: Session = Depends(get_db)):
     rejected = db.query(ExpenseDB).filter(ExpenseDB.status == "rejected").count()
     flagged = db.query(ExpenseDB).filter(ExpenseDB.status == "flagged").count()
     paid = db.query(ExpenseDB).filter(ExpenseDB.status == "paid").count()
+    pending_approval = db.query(ExpenseDB).filter(ExpenseDB.status == "pending_approval").count()
     avg_risk = db.query(func.avg(ExpenseDB.risk_score)).scalar() or 0.0
 
     # Estimate time saved: 20 min per expense manually, ~3 sec with AI
@@ -345,6 +359,7 @@ async def get_expense_stats(db: Session = Depends(get_db)):
         rejected=rejected,
         flagged=flagged,
         paid=paid,
+        pending_approval=pending_approval,
         avg_risk_score=round(avg_risk, 4),
         total_saved_time_hours=round(time_saved, 1),
     )
@@ -366,7 +381,7 @@ async def manually_approve(expense_id: str, db: Session = Depends(get_db)):
     if not expense:
         raise HTTPException(status_code=404, detail="Expense not found")
 
-    if expense.status not in ["manager_review", "pending", "disputed"]:
+    if expense.status not in ["manager_review", "pending", "pending_approval", "disputed"]:
         raise HTTPException(status_code=400, detail=f"Cannot approve expense in '{expense.status}' status")
 
     # Get employee wallet
@@ -377,6 +392,16 @@ async def manually_approve(expense_id: str, db: Session = Depends(get_db)):
     expense.status = "approved"
     expense.approved_by = "Manager"
     expense.processed_at = datetime.utcnow()
+
+    # Mark any pending approval steps as approved
+    pending_steps = db.query(ApprovalStepDB).filter(
+        ApprovalStepDB.expense_id == expense_id,
+        ApprovalStepDB.status.in_(["pending", "waiting"]),
+    ).all()
+    for step in pending_steps:
+        step.status = "approved"
+        step.acted_at = datetime.utcnow()
+        step.comments = "Bulk approved by manager"
 
     # Execute payment on Tempo
     if employee and employee.tempo_wallet:
@@ -631,6 +656,224 @@ async def parse_expense_text(request: NLParseRequest):
     """
     result = parse_natural_language(request.text)
     return result
+
+
+# ─── Multi-Step Approval Actions ──────────────────────────────────
+
+@router.post("/{expense_id}/step/approve")
+async def approve_step(
+    expense_id: str,
+    request: StepActionRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Approve the current pending step in the multi-step approval chain.
+    If this is the last step, triggers Tempo payment.
+    """
+    expense = db.query(ExpenseDB).filter(ExpenseDB.expense_id == expense_id).first()
+    if not expense:
+        raise HTTPException(status_code=404, detail="Expense not found")
+
+    if expense.status not in ["pending_approval", "manager_review", "disputed"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot process approval step for expense in '{expense.status}' status"
+        )
+
+    routing = ApprovalRoutingService(db)
+    result = routing.approve_step(expense_id, request.approver_id, request.comments)
+
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    if result.get("fully_approved"):
+        # All steps done — mark expense as approved and pay
+        expense.status = "approved"
+        expense.approved_by = f"Chain ({result['total_steps']} approvers)"
+        expense.processed_at = datetime.utcnow()
+
+        # Execute Tempo payment
+        employee = db.query(EmployeeDB).filter(
+            EmployeeDB.employee_id == expense.employee_id
+        ).first()
+        if employee and employee.tempo_wallet:
+            tempo_client = get_tempo_client()
+            payment = tempo_client.send_payment(
+                destination=employee.tempo_wallet,
+                amount=expense.amount,
+                memo=expense.memo or f"Fully approved | {expense_id}",
+                expense_id=expense_id,
+            )
+            if payment["success"]:
+                expense.tx_hash = payment["tx_hash"]
+                expense.tempo_tx_url = payment["tempo_tx_url"]
+                expense.paid_at = datetime.utcnow()
+                expense.status = "paid"
+
+        audit = AuditLogDB(
+            expense_id=expense_id,
+            action="fully_approved",
+            actor="System",
+            details=json.dumps({
+                "total_steps": result["total_steps"],
+                "payment_triggered": expense.tx_hash is not None,
+            }),
+            tx_hash=expense.tx_hash,
+        )
+        db.add(audit)
+    else:
+        # Advance to next step
+        expense.current_step = result["current_step"]
+        expense.total_steps = result["total_steps"]
+
+    db.commit()
+
+    return {
+        "message": "Step approved",
+        "expense_id": expense_id,
+        "expense_status": expense.status,
+        **result,
+    }
+
+
+@router.post("/{expense_id}/step/reject")
+async def reject_step(
+    expense_id: str,
+    request: StepActionRequest,
+    db: Session = Depends(get_db),
+):
+    """Reject at any step in the approval chain — stops processing."""
+    expense = db.query(ExpenseDB).filter(ExpenseDB.expense_id == expense_id).first()
+    if not expense:
+        raise HTTPException(status_code=404, detail="Expense not found")
+
+    if expense.status not in ["pending_approval", "manager_review", "disputed"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot reject expense in '{expense.status}' status"
+        )
+
+    routing = ApprovalRoutingService(db)
+    result = routing.reject_step(expense_id, request.approver_id, request.comments)
+
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    expense.status = "rejected"
+    expense.approved_by = result.get("rejected_by")
+    expense.approval_reason = f"Rejected by {result.get('rejected_by')}: {request.comments or 'No reason given'}"
+    expense.processed_at = datetime.utcnow()
+
+    db.commit()
+
+    return {
+        "message": "Expense rejected",
+        "expense_id": expense_id,
+        "expense_status": "rejected",
+        **result,
+    }
+
+
+@router.post("/{expense_id}/step/escalate")
+async def escalate_step(
+    expense_id: str,
+    request: StepActionRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Escalate the current step up the org hierarchy.
+    The approver passes it to their own manager.
+    """
+    expense = db.query(ExpenseDB).filter(ExpenseDB.expense_id == expense_id).first()
+    if not expense:
+        raise HTTPException(status_code=404, detail="Expense not found")
+
+    if expense.status not in ["pending_approval", "manager_review"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot escalate expense in '{expense.status}' status"
+        )
+
+    routing = ApprovalRoutingService(db)
+    result = routing.escalate_step(expense_id, request.approver_id, request.comments)
+
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    expense.status = "pending_approval"
+    expense.current_step = result.get("new_step_order", expense.current_step)
+    expense.total_steps = result.get("total_steps", expense.total_steps)
+
+    db.commit()
+
+    return {
+        "message": "Expense escalated",
+        "expense_id": expense_id,
+        "expense_status": "pending_approval",
+        **result,
+    }
+
+
+@router.get("/{expense_id}/steps")
+async def get_approval_steps(expense_id: str, db: Session = Depends(get_db)):
+    """Get the full approval chain for an expense."""
+    expense = db.query(ExpenseDB).filter(ExpenseDB.expense_id == expense_id).first()
+    if not expense:
+        raise HTTPException(status_code=404, detail="Expense not found")
+
+    routing = ApprovalRoutingService(db)
+    steps = routing.get_steps_for_expense(expense_id)
+
+    return {
+        "expense_id": expense_id,
+        "expense_status": expense.status,
+        "current_step": expense.current_step,
+        "total_steps": expense.total_steps,
+        "steps": [
+            {
+                "step_order": s.step_order,
+                "approver_role": s.approver_role,
+                "approver_id": s.approver_id,
+                "approver_name": s.approver_name,
+                "status": s.status,
+                "comments": s.comments,
+                "acted_at": s.acted_at.isoformat() if s.acted_at else None,
+                "created_at": s.created_at.isoformat() if s.created_at else None,
+            }
+            for s in steps
+        ],
+    }
+
+
+@router.get("/pending-for/{approver_id}")
+async def get_pending_for_approver(approver_id: str, db: Session = Depends(get_db)):
+    """Get all expenses pending approval by a specific approver."""
+    routing = ApprovalRoutingService(db)
+    steps = routing.get_pending_for_approver(approver_id)
+
+    # Enrich with expense details
+    result = []
+    for step in steps:
+        expense = db.query(ExpenseDB).filter(
+            ExpenseDB.expense_id == step.expense_id
+        ).first()
+        if expense:
+            result.append({
+                "step_id": step.id,
+                "step_order": step.step_order,
+                "approver_role": step.approver_role,
+                "expense_id": expense.expense_id,
+                "employee_id": expense.employee_id,
+                "amount": expense.amount,
+                "category": expense.category,
+                "merchant": expense.merchant,
+                "description": expense.description,
+                "risk_score": expense.risk_score,
+                "status": expense.status,
+                "submitted_at": expense.submitted_at.isoformat() if expense.submitted_at else None,
+            })
+
+    return {"approver_id": approver_id, "pending_count": len(result), "expenses": result}
 
 
 # ─── Batch Approve (Parallel Tempo Payments) ──────────────────────

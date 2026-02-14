@@ -27,6 +27,7 @@ async def create_employee(employee: EmployeeCreate, db: Session = Depends(get_db
         email=employee.email,
         department=employee.department,
         role=employee.role,
+        reports_to=employee.reports_to,
         tempo_wallet=employee.tempo_wallet,
         monthly_limit=employee.monthly_limit,
     )

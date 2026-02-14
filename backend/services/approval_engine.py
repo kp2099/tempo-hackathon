@@ -3,18 +3,22 @@ Approval Engine - The AI Agent's decision-making core.
 Combines ML risk scoring, anomaly detection, and policy checks
 to make autonomous approval decisions.
 
+After AI scoring, consults configurable approval routing rules to
+determine the multi-step approval chain (manager, finance, etc.).
+
 Memos are encoded as bytes32 for Tempo's TIP-20 transferWithMemo().
 """
 
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 from sqlalchemy.orm import Session
 
 from ml.risk_scorer import get_risk_scorer
 from ml.anomaly_detector import get_anomaly_detector
 from ml.categorizer import get_categorizer
 from services.policy_engine import PolicyEngine
+from services.approval_routing import ApprovalRoutingService
 from config import settings
 
 logger = logging.getLogger("TempoExpenseAI.ApprovalEngine")
@@ -33,8 +37,9 @@ class ApprovalDecision:
         policy_result: dict,
         reason: str,
         memo: str,
+        approval_steps: list = None,
     ):
-        self.decision = decision  # auto_approved, manager_review, rejected, flagged
+        self.decision = decision  # auto_approved, pending_approval, manager_review, rejected, flagged
         self.risk_score = risk_score
         self.anomaly_score = anomaly_score
         self.predicted_category = predicted_category
@@ -42,6 +47,8 @@ class ApprovalDecision:
         self.policy_result = policy_result
         self.reason = reason
         self.memo = memo  # For Tempo blockchain memo (bytes32)
+        self.approval_steps = approval_steps or []
+        self.total_steps = len(self.approval_steps)
         self.timestamp = datetime.utcnow()
 
     def to_dict(self) -> dict:
@@ -54,6 +61,8 @@ class ApprovalDecision:
             "policy_result": self.policy_result,
             "reason": self.reason,
             "memo": self.memo,
+            "approval_steps": self.approval_steps,
+            "total_steps": self.total_steps,
             "timestamp": self.timestamp.isoformat(),
         }
 
@@ -75,12 +84,15 @@ class ApprovalEngine:
         self.anomaly_detector = get_anomaly_detector()
         self.categorizer = get_categorizer()
         self.policy_engine = PolicyEngine(db=db)
+        self.routing_service = ApprovalRoutingService(db) if db else None
+        self.db = db
 
-    def evaluate(self, expense_data: dict, employee_id: str) -> ApprovalDecision:
+    def evaluate(self, expense_data: dict, employee_id: str, expense_id: str = None) -> ApprovalDecision:
         """
         Evaluate an expense and make an autonomous approval decision.
 
-        This is the core AI agent logic.
+        This is the core AI agent logic. After scoring, it also consults
+        the approval routing rules to determine the multi-step chain.
         """
         logger.info(f"🤖 {self.AGENT_NAME} evaluating expense: "
                      f"${expense_data.get('amount', 0):.2f} "
@@ -104,7 +116,7 @@ class ApprovalEngine:
             expense_data, employee_id
         )
 
-        # Step 5: MAKE THE DECISION
+        # Step 5: MAKE THE AI DECISION (risk-based)
         decision, reason = self._make_decision(
             risk_score=risk_score,
             anomaly_score=anomaly_score,
@@ -115,7 +127,34 @@ class ApprovalEngine:
             risk_factors=risk_factors,
         )
 
-        # Step 6: Build Tempo on-chain memo (bytes32)
+        # Step 6: Resolve approval routing chain (if not rejected/flagged)
+        approval_steps = []
+        if decision in ("auto_approved", "manager_review") and self.routing_service and expense_id:
+            # Look up the employee's department for rule matching
+            from database import EmployeeDB
+            emp = self.db.query(EmployeeDB).filter(
+                EmployeeDB.employee_id == employee_id
+            ).first()
+            department = emp.department if emp else "unknown"
+
+            approval_steps = self.routing_service.resolve_approval_chain(
+                expense_id=expense_id,
+                employee_id=employee_id,
+                category=expense_data.get("category", predicted_category),
+                department=department,
+                amount=expense_data.get("amount", 0),
+            )
+
+            # If routing rules created a multi-step chain, override decision
+            if approval_steps:
+                step_names = [s["approver_name"] or s["approver_role"] for s in approval_steps]
+                decision = "pending_approval"
+                reason = (
+                    f"Routed for multi-step approval: {' → '.join(step_names)}. "
+                    f"AI risk score: {risk_score:.2f}. {reason}"
+                )
+
+        # Step 7: Build Tempo on-chain memo (bytes32)
         memo = self._build_memo(
             risk_score=risk_score,
             category=expense_data.get("category", predicted_category),
@@ -124,7 +163,7 @@ class ApprovalEngine:
         )
 
         logger.info(f"   Decision: {decision} | Risk: {risk_score:.3f} | "
-                     f"Anomaly: {anomaly_score:.3f} | Memo: {memo}")
+                     f"Anomaly: {anomaly_score:.3f} | Steps: {len(approval_steps)}")
 
         return ApprovalDecision(
             decision=decision,
@@ -135,6 +174,7 @@ class ApprovalEngine:
             policy_result=policy_result,
             reason=reason,
             memo=memo,
+            approval_steps=approval_steps,
         )
 
     def _make_decision(
