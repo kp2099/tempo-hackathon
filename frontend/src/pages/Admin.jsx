@@ -12,6 +12,7 @@ export default function Admin() {
   const [batchLoading, setBatchLoading] = useState(false);
   const [batchResult, setBatchResult] = useState(null);
   const [activeTab, setActiveTab] = useState('review'); // 'review', 'rules', 'org'
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     loadEmployees();
@@ -46,6 +47,12 @@ export default function Admin() {
     try {
       const res = await batchApprove();
       setBatchResult(res.data);
+      // Refresh expense lists after batch approve
+      setRefreshKey(prev => prev + 1);
+      // Refresh spending if employee selected
+      if (selectedEmployee) {
+        loadSpending(selectedEmployee.employee_id);
+      }
     } catch (err) {
       setBatchResult({
         error: err.response?.data?.detail || 'Batch approval failed',
@@ -286,7 +293,7 @@ export default function Admin() {
               </div>
             )}
 
-            <ExpenseList filterStatus="manager_review,disputed,pending_approval" showActions={true} currentApproverId={selectedEmployee?.employee_id} isAdmin={true} />
+            <ExpenseList filterStatus="manager_review,disputed,pending_approval" showActions={true} currentApproverId={selectedEmployee?.employee_id} isAdmin={true} refreshKey={refreshKey} />
           </div>
 
           {/* Past Activity for selected employee */}

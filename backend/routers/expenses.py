@@ -881,14 +881,15 @@ async def get_pending_for_approver(approver_id: str, db: Session = Depends(get_d
 @router.post("/batch-approve")
 async def batch_approve_pending(db: Session = Depends(get_db)):
     """
-    Approve and pay ALL pending manager_review expenses in parallel.
+    Approve and pay ALL pending expenses in parallel.
 
     Uses Tempo's 2D nonce system for concurrent transaction submission.
     This demonstrates high-throughput payment processing capability.
+    Handles expenses in manager_review, pending_approval, and disputed statuses.
     """
-    # Get all pending expenses
+    # Get all pending expenses (all reviewable statuses)
     pending = db.query(ExpenseDB).filter(
-        ExpenseDB.status == "manager_review"
+        ExpenseDB.status.in_(["manager_review", "pending_approval", "disputed"])
     ).all()
 
     if not pending:
@@ -940,6 +941,16 @@ async def batch_approve_pending(db: Session = Depends(get_db)):
             expense.tempo_tx_url = result.get("tempo_tx_url")
             expense.paid_at = datetime.utcnow()
             expense.processed_at = datetime.utcnow()
+
+            # Mark any pending approval steps as approved
+            pending_steps = db.query(ApprovalStepDB).filter(
+                ApprovalStepDB.expense_id == eid,
+                ApprovalStepDB.status.in_(["pending", "waiting"]),
+            ).all()
+            for step in pending_steps:
+                step.status = "approved"
+                step.acted_at = datetime.utcnow()
+                step.comments = "Batch approved by manager"
 
             # Audit log
             audit = AuditLogDB(

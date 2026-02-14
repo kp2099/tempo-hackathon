@@ -17,7 +17,7 @@ const statusConfig = {
   escalated: { icon: GitBranch, color: 'text-purple-400', bg: 'bg-purple-500/10', label: 'Escalated' },
 };
 
-export default function ExpenseList({ filterStatus, showActions, employeeId, limit, currentApproverId, isAdmin = false }) {
+export default function ExpenseList({ filterStatus, showActions, employeeId, limit, currentApproverId, isAdmin = false, refreshKey = 0 }) {
   const [expenses, setExpenses] = useState([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -28,7 +28,7 @@ export default function ExpenseList({ filterStatus, showActions, employeeId, lim
 
   useEffect(() => {
     loadExpenses();
-  }, [filterStatus, employeeId]);
+  }, [filterStatus, employeeId, refreshKey]);
 
   const loadExpenses = async () => {
     setLoading(true);
